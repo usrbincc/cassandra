@@ -58,6 +58,10 @@ import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.KSMetaData;
 import org.apache.cassandra.config.Schema;
+import org.apache.cassandra.cql3.UntypedResultSet;
+import org.apache.cassandra.cql3.QueryOptions;
+import org.apache.cassandra.cql3.QueryProcessor;
+import org.apache.cassandra.cql3.statements.SelectStatement;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.commitlog.CommitLog;
 import org.apache.cassandra.db.compaction.CompactionManager;
@@ -88,7 +92,9 @@ import org.apache.cassandra.streaming.*;
 import org.apache.cassandra.thrift.EndpointDetails;
 import org.apache.cassandra.thrift.TokenRange;
 import org.apache.cassandra.thrift.cassandraConstants;
+import org.apache.cassandra.tracing.TraceState;
 import org.apache.cassandra.tracing.Tracing;
+import org.apache.cassandra.transport.messages.ResultMessage;
 import org.apache.cassandra.utils.*;
 
 import static java.nio.charset.StandardCharsets.ISO_8859_1;
@@ -2474,7 +2480,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
             isSequential = false;
         }
 
-        RepairOption options = new RepairOption(isSequential, primaryRange, !fullRepair, 1, Collections.<Range<Token>>emptyList());
+        RepairOption options = new RepairOption(isSequential, primaryRange, !fullRepair, false, 1, Collections.<Range<Token>>emptyList());
         if (dataCenters != null)
         {
             options.getDataCenters().addAll(dataCenters);
@@ -2524,7 +2530,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
         }
         Collection<Range<Token>> repairingRange = createRepairRangeFrom(beginToken, endToken);
 
-        RepairOption options = new RepairOption(isSequential, false, !fullRepair, 1, repairingRange);
+        RepairOption options = new RepairOption(isSequential, false, !fullRepair, false, 1, repairingRange);
         options.getDataCenters().addAll(dataCenters);
         if (hosts != null)
         {
@@ -2608,6 +2614,60 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
         return cmd;
     }
 
+    private Thread createQueryThread(final int cmd, final UUID sessionId)
+    {
+        Thread queryThread = new Thread(new WrappedRunnable()
+        {
+            // Query events within a time interval that overlaps the last by one second. Ignore duplicates. Ignore local traces.
+            // Wake up upon local trace activity. Query when notified of trace activity with a timeout that doubles every two timeouts.
+            public void runMayThrow() throws Exception
+            {
+                TraceState state = Tracing.instance.get(sessionId);
+                if (state == null)
+                    throw new Exception("no tracestate");
+
+                String format = "select event_id, source, activity from %s.%s where session_id = ? and event_id > ? and event_id < ?;";
+                String query = String.format(format, Tracing.TRACE_KS, Tracing.EVENTS_CF);
+                SelectStatement statement = (SelectStatement) QueryProcessor.parseStatement(query).prepare().statement;
+
+                ByteBuffer sessionIdBytes = ByteBufferUtil.bytes(sessionId);
+                InetAddress source = FBUtilities.getBroadcastAddress();
+
+                HashSet<UUID>[] seen = new HashSet[] { new HashSet<UUID>(), new HashSet<UUID>() };
+                int si = 0;
+                UUID uuid;
+
+                long tlast = System.currentTimeMillis(), tcur;
+                while (!state.isDone())
+                {
+                    ByteBuffer tminBytes = ByteBufferUtil.bytes(UUIDGen.minTimeUUID(tlast - 1000));
+                    ByteBuffer tmaxBytes = ByteBufferUtil.bytes(UUIDGen.maxTimeUUID(tcur = System.currentTimeMillis()));
+                    QueryOptions options = QueryOptions.forInternalCalls(ConsistencyLevel.ONE, Lists.newArrayList(sessionIdBytes, tminBytes, tmaxBytes));
+                    ResultMessage.Rows rows = statement.execute(QueryState.forInternalCalls(), options);
+                    UntypedResultSet result = UntypedResultSet.create(rows.result);
+
+                    for (UntypedResultSet.Row r : result)
+                    {
+                        if (source.equals(r.getInetAddress("source")))
+                            continue;
+                        if ((uuid = r.getUUID("event_id")).timestamp() > (tcur - 1000) * 10000)
+                            seen[si].add(uuid);
+                        if (seen[si ^ 1].contains(uuid))
+                            continue;
+                        String message = String.format("%s: %s", r.getInetAddress("source"), r.getString("activity"));
+                        sendNotification("repair", message, new int[]{cmd, ActiveRepairService.Status.RUNNING.ordinal()});
+                    }
+                    tlast = tcur;
+
+                    seen[si ^= 1].clear();
+                }
+            }
+        });
+        queryThread.setName("RepairTracePolling");
+        queryThread.start();
+        return queryThread;
+    }
+
     private FutureTask<Object> createRepairTask(final int cmd, final String keyspace, final RepairOption options)
     {
         if (!options.getDataCenters().isEmpty() && options.getDataCenters().contains(DatabaseDescriptor.getLocalDataCenter()))
@@ -2619,10 +2679,29 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
         {
             protected void runMayThrow() throws Exception
             {
+                TraceState traceState = null;
+
+                String[] columnFamilies = options.getColumnFamilies().toArray(new String[options.getColumnFamilies().size()]);
+                Iterable<ColumnFamilyStore> validColumnFamilies = getValidColumnFamilies(false, false, keyspace, columnFamilies);
+
                 final long startTime = System.currentTimeMillis();
                 String message = String.format("Starting repair command #%d, repairing keyspace %s with %s", cmd, keyspace, options);
                 logger.info(message);
                 sendNotification("repair", message, new int[]{cmd, ActiveRepairService.Status.STARTED.ordinal()});
+                if (options.isTraced())
+                {
+                    StringBuilder cfsb = new StringBuilder();
+                    for (ColumnFamilyStore cfs : validColumnFamilies)
+                        cfsb.append(", ").append(cfs.keyspace.getName()).append(".").append(cfs.name);
+
+                    UUID sessionId = Tracing.instance.newSession(Tracing.TraceType.REPAIR);
+                    traceState = Tracing.instance.begin("repair", ImmutableMap.of("keyspace", keyspace, "columnFamilies", cfsb.substring(2)));
+                    assert traceState != null;
+                    Tracing.traceRepair(message);
+                    traceState.enableNotifications();
+                    traceState.setNotificationHandle(new int[]{ cmd, ActiveRepairService.Status.RUNNING.ordinal() });
+                    Thread queryThread = createQueryThread(cmd, sessionId);
+                }
 
                 if (options.isSequential() && options.isIncremental())
                 {
@@ -2652,10 +2731,9 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
 
                 // Validate columnfamilies
                 List<ColumnFamilyStore> columnFamilyStores = new ArrayList<>();
-                String[] columnFamilies = options.getColumnFamilies().toArray(new String[options.getColumnFamilies().size()]);
                 try
                 {
-                    Iterables.addAll(columnFamilyStores, getValidColumnFamilies(false, false, keyspace, columnFamilies));
+                    Iterables.addAll(columnFamilyStores, validColumnFamilies);
                 }
                 catch (IllegalArgumentException e)
                 {
@@ -2732,39 +2810,37 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
                 // After all repair sessions completes(successful or not),
                 // run anticompaction if necessary and send finish notice back to client
                 ListenableFuture<?> allSessions = Futures.allAsList(futures);
-                Futures.addCallback(allSessions, new FutureCallback<Object>()
+                try
                 {
-                    public void onSuccess(@Nullable Object result)
+                    Object result = allSessions.get();
+                    if (options.isIncremental())
                     {
-                        if (options.isIncremental())
+                        try
                         {
-                            try
-                            {
-                                ActiveRepairService.instance.finishParentSession(parentSession, allNeighbors);
-                            }
-                            catch (Exception e)
-                            {
-                                logger.error("Error in incremental repair", e);
-                            }
+                            ActiveRepairService.instance.finishParentSession(parentSession, allNeighbors);
                         }
-                        repairComplete();
+                        catch (Exception e)
+                        {
+                            logger.error("Error in incremental repair", e);
+                        }
                     }
-
-                    public void onFailure(Throwable t)
-                    {
-                        repairComplete();
-                    }
-
-                    private void repairComplete()
-                    {
-                        String duration = DurationFormatUtils.formatDurationWords(System.currentTimeMillis() - startTime, true, true);
-                        String message = String.format("Repair command #%d finished in %s", cmd, duration);
-                        sendNotification("repair", message,
-                                         new int[]{cmd, ActiveRepairService.Status.FINISHED.ordinal()});
-                        logger.info(message);
-                        executor.shutdownNow();
-                    }
-                }, MoreExecutors.sameThreadExecutor());
+                }
+                catch (Throwable t)
+                {
+                }
+                String duration = DurationFormatUtils.formatDurationWords(System.currentTimeMillis() - startTime, true, true);
+                message = String.format("Repair command #%d finished in %s", cmd, duration);
+                sendNotification("repair", message,
+                                 new int[]{cmd, ActiveRepairService.Status.FINISHED.ordinal()});
+                logger.info(message);
+                if (options.isTraced())
+                {
+                    assert traceState != null;
+                    traceState.setNotificationHandle(null);
+                    Tracing.traceRepair(message);
+                    Tracing.instance.stopSession();
+                }
+                executor.shutdownNow();
             }
         }, null);
     }
@@ -3784,6 +3860,12 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
     public List<String> getKeyspaces()
     {
         List<String> keyspaceNamesList = new ArrayList<>(Schema.instance.getKeyspaces());
+        return Collections.unmodifiableList(keyspaceNamesList);
+    }
+
+    public List<String> getNonSystemKeyspaces()
+    {
+        List<String> keyspaceNamesList = new ArrayList<>(Schema.instance.getNonSystemKeyspaces());
         return Collections.unmodifiableList(keyspaceNamesList);
     }
 

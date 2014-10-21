@@ -317,10 +317,15 @@ public class NodeTool
 
         protected List<String> parseOptionalKeyspace(List<String> cmdArgs, NodeProbe nodeProbe)
         {
+            return parseOptionalKeyspace(cmdArgs, nodeProbe, false);
+        }
+
+        protected List<String> parseOptionalKeyspace(List<String> cmdArgs, NodeProbe nodeProbe, boolean includeSystemKS)
+        {
             List<String> keyspaces = new ArrayList<>();
 
             if (cmdArgs == null || cmdArgs.isEmpty())
-                keyspaces.addAll(nodeProbe.getKeyspaces());
+                keyspaces.addAll(includeSystemKS ? nodeProbe.getKeyspaces() : nodeProbe.getNonSystemKeyspaces());
             else
                 keyspaces.add(cmdArgs.get(0));
 
@@ -1690,6 +1695,9 @@ public class NodeTool
                                                                                      "WARNING: increasing this puts more load on repairing nodes, so be careful. (default: 1, max: 4)")
         private int numJobThreads = 1;
 
+        @Option(title = "trace_repair", name = {"-tr", "--trace"}, description = "Use -tr to trace repair")
+        private boolean trace = false;
+
         @Override
         public void execute(NodeProbe probe)
         {
@@ -1706,6 +1714,7 @@ public class NodeTool
                 options.put(RepairOption.PRIMARY_RANGE_KEY, Boolean.toString(primaryRange));
                 options.put(RepairOption.INCREMENTAL_KEY, Boolean.toString(!fullRepair));
                 options.put(RepairOption.JOB_THREADS_KEY, Integer.toString(numJobThreads));
+                options.put(RepairOption.TRACE_KEY, Boolean.toString(trace));
                 options.put(RepairOption.COLUMNFAMILIES_KEY, StringUtils.join(cfnames, ","));
                 if (!startToken.isEmpty() || !endToken.isEmpty())
                 {
