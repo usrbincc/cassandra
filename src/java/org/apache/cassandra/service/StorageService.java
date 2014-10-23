@@ -2677,7 +2677,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
         {
             protected void runMayThrow() throws Exception
             {
-                TraceState traceState = null;
+                final TraceState traceState;
 
                 String[] columnFamilies = options.getColumnFamilies().toArray(new String[options.getColumnFamilies().size()]);
                 Iterable<ColumnFamilyStore> validColumnFamilies = getValidColumnFamilies(false, false, keyspace, columnFamilies);
@@ -2694,13 +2694,16 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
 
                     UUID sessionId = Tracing.instance.newSession(Tracing.TraceType.REPAIR);
                     traceState = Tracing.instance.begin("repair", ImmutableMap.of("keyspace", keyspace, "columnFamilies", cfsb.substring(2)));
-                    assert traceState != null;
                     Tracing.traceRepair(message);
                     traceState.enableNotifications();
                     traceState.setNotificationHandle(new int[]{ cmd, ActiveRepairService.Status.RUNNING.ordinal() });
                     Thread queryThread = createQueryThread(cmd, sessionId);
                     queryThread.setName("RepairTracePolling");
                     queryThread.start();
+                }
+                else
+                {
+                    traceState = null;
                 }
 
                 if (options.isSequential() && options.isIncremental())
@@ -2810,37 +2813,45 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
                 // After all repair sessions completes(successful or not),
                 // run anticompaction if necessary and send finish notice back to client
                 ListenableFuture<?> allSessions = Futures.allAsList(futures);
-                try
+                Futures.addCallback(allSessions, new FutureCallback<Object>()
                 {
-                    Object result = allSessions.get();
-                    if (options.isIncremental())
+                    public void onSuccess(@Nullable Object result)
                     {
-                        try
+                        if (options.isIncremental())
                         {
-                            ActiveRepairService.instance.finishParentSession(parentSession, allNeighbors);
+                            try
+                            {
+                                ActiveRepairService.instance.finishParentSession(parentSession, allNeighbors);
+                            }
+                            catch (Exception e)
+                            {
+                                logger.error("Error in incremental repair", e);
+                            }
                         }
-                        catch (Exception e)
-                        {
-                            logger.error("Error in incremental repair", e);
-                        }
+                        repairComplete();
                     }
-                }
-                catch (Throwable t)
-                {
-                }
-                String duration = DurationFormatUtils.formatDurationWords(System.currentTimeMillis() - startTime, true, true);
-                message = String.format("Repair command #%d finished in %s", cmd, duration);
-                sendNotification("repair", message,
-                                 new int[]{cmd, ActiveRepairService.Status.FINISHED.ordinal()});
-                logger.info(message);
-                if (options.isTraced())
-                {
-                    assert traceState != null;
-                    traceState.setNotificationHandle(null);
-                    Tracing.traceRepair(message);
-                    Tracing.instance.stopSession();
-                }
-                executor.shutdownNow();
+
+                    public void onFailure(Throwable t)
+                    {
+                        repairComplete();
+                    }
+
+                    private void repairComplete()
+                    {
+                        String duration = DurationFormatUtils.formatDurationWords(System.currentTimeMillis() - startTime, true, true);
+                        String message = String.format("Repair command #%d finished in %s", cmd, duration);
+                        sendNotification("repair", message,
+                                         new int[]{cmd, ActiveRepairService.Status.FINISHED.ordinal()});
+                        logger.info(message);
+                        if (options.isTraced())
+                        {
+                            traceState.setNotificationHandle(null);
+                            Tracing.traceRepair(message);
+                            Tracing.instance.stopSession();
+                        }
+                        executor.shutdownNow();
+                    }
+                }, MoreExecutors.sameThreadExecutor());
             }
         }, null);
     }
