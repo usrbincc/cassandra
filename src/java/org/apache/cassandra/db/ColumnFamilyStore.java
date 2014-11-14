@@ -34,6 +34,10 @@ import com.google.common.util.concurrent.*;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.Uninterruptibles;
 import org.apache.cassandra.io.FSWriteError;
+import org.apache.cassandra.io.sstable.format.SSTableFormat;
+import org.apache.cassandra.io.sstable.format.SSTableReader;
+import org.apache.cassandra.io.sstable.format.SSTableWriter;
+import org.apache.cassandra.io.sstable.format.Version;
 import org.json.simple.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -127,7 +131,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
     /* These are locally held copies to be changed from the config during runtime */
     private volatile DefaultInteger minCompactionThreshold;
     private volatile DefaultInteger maxCompactionThreshold;
-    private volatile AbstractCompactionStrategy compactionStrategy;
+    private final WrappingCompactionStrategy compactionStrategyWrapper;
 
     public final Directories directories;
 
@@ -146,7 +150,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
             for (ColumnFamilyStore cfs : concatWithIndexes())
                 cfs.maxCompactionThreshold = new DefaultInteger(metadata.getMaxCompactionThreshold());
 
-        maybeReloadCompactionStrategy();
+        compactionStrategyWrapper.maybeReloadCompactionStrategy(metadata);
 
         scheduleFlush();
 
@@ -156,22 +160,6 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         // because the old one still aliases the previous comparator.
         if (data.getView().getCurrentMemtable().initialComparator != metadata.comparator)
             switchMemtable();
-    }
-
-    private void maybeReloadCompactionStrategy()
-    {
-        // Check if there is a need for reloading
-        if (metadata.compactionStrategyClass.equals(compactionStrategy.getClass()) && metadata.compactionStrategyOptions.equals(compactionStrategy.options))
-            return;
-
-        // synchronize vs runWithCompactionsDisabled calling pause/resume.  otherwise, letting old compactions
-        // finish should be harmless and possibly useful.
-        synchronized (this)
-        {
-            compactionStrategy.shutdown();
-            compactionStrategy = metadata.createCompactionStrategyInstance(this);
-            compactionStrategy.startup();
-        }
     }
 
     void scheduleFlush()
@@ -213,7 +201,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         try
         {
             metadata.compactionStrategyClass = CFMetaData.createCompactionStrategy(compactionStrategyClass);
-            maybeReloadCompactionStrategy();
+            compactionStrategyWrapper.maybeReloadCompactionStrategy(metadata);
         }
         catch (ConfigurationException e)
         {
@@ -297,13 +285,12 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
             CacheService.instance.keyCache.loadSaved(this);
 
         // compaction strategy should be created after the CFS has been prepared
-        this.compactionStrategy = metadata.createCompactionStrategyInstance(this);
-        this.compactionStrategy.startup();
+        this.compactionStrategyWrapper = new WrappingCompactionStrategy(this);
 
         if (maxCompactionThreshold.value() <= 0 || minCompactionThreshold.value() <=0)
         {
             logger.warn("Disabling compaction strategy by setting compaction thresholds to 0 is deprecated, set the compaction option 'enabled' to 'false' instead.");
-            this.compactionStrategy.disable();
+            this.compactionStrategyWrapper.disable();
         }
 
         // create the private ColumnFamilyStores for the secondary column indexes
@@ -362,11 +349,12 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         }
         catch (Exception e)
         {
+            JVMStabilityInspector.inspectThrowable(e);
             // this shouldn't block anything.
             logger.warn("Failed unregistering mbean: {}", mbeanName, e);
         }
 
-        compactionStrategy.shutdown();
+        compactionStrategyWrapper.shutdown();
 
         SystemKeyspace.removeTruncationRecord(metadata.cfId);
         data.unreferenceSSTables();
@@ -441,7 +429,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
             generations.add(desc.generation);
             if (!desc.isCompatible())
                 throw new RuntimeException(String.format("Incompatible SSTable found. Current version %s is unable to read file: %s. Please run upgradesstables.",
-                                                          Descriptor.Version.CURRENT, desc));
+                        desc.getFormat().getLatestVersion(), desc));
         }
         Collections.sort(generations);
         int value = (generations.size() > 0) ? (generations.get(generations.size() - 1)) : 0;
@@ -672,7 +660,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         Set<Descriptor> currentDescriptors = new HashSet<Descriptor>();
         for (SSTableReader sstable : data.getView().sstables)
             currentDescriptors.add(sstable.descriptor);
-        Set<SSTableReader> newSSTables = new HashSet<SSTableReader>();
+        Set<SSTableReader> newSSTables = new HashSet<>();
 
         Directories.SSTableLister lister = directories.sstableLister().skipTemporary(true);
         for (Map.Entry<Descriptor, Set<Component>> entry : lister.list().entrySet())
@@ -686,8 +674,8 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
 
             if (!descriptor.isCompatible())
                 throw new RuntimeException(String.format("Can't open incompatible SSTable! Current version %s, found file: %s",
-                                                         Descriptor.Version.CURRENT,
-                                                         descriptor));
+                        descriptor.getFormat().getLatestVersion(),
+                        descriptor));
 
             // force foreign sstables to level 0
             try
@@ -711,7 +699,8 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
                                                descriptor.ksname,
                                                descriptor.cfname,
                                                fileIndexGenerator.incrementAndGet(),
-                                               Descriptor.Type.FINAL);
+                                               Descriptor.Type.FINAL,
+                                               descriptor.formatType);
             }
             while (new File(newDescriptor.filenameFor(Component.DATA)).exists());
 
@@ -780,17 +769,23 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
 
     public String getTempSSTablePath(File directory)
     {
-        return getTempSSTablePath(directory, Descriptor.Version.CURRENT);
+        return getTempSSTablePath(directory, DatabaseDescriptor.getSSTableFormat().info.getLatestVersion(), DatabaseDescriptor.getSSTableFormat());
     }
 
-    private String getTempSSTablePath(File directory, Descriptor.Version version)
+    public String getTempSSTablePath(File directory, SSTableFormat.Type format)
+    {
+        return getTempSSTablePath(directory, format.info.getLatestVersion(), format);
+    }
+
+    private String getTempSSTablePath(File directory, Version version, SSTableFormat.Type format)
     {
         Descriptor desc = new Descriptor(version,
                                          directory,
                                          keyspace.getName(),
                                          name,
                                          fileIndexGenerator.incrementAndGet(),
-                                         Descriptor.Type.TEMP);
+                                         Descriptor.Type.TEMP,
+                                         format);
         return desc.filenameFor(Component.DATA);
     }
 
@@ -1139,9 +1134,11 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         long start = System.nanoTime();
 
         Memtable mt = data.getMemtableFor(opGroup);
-        mt.put(key, columnFamily, indexer, opGroup, replayPosition);
+        final long timeDelta = mt.put(key, columnFamily, indexer, opGroup, replayPosition);
         maybeUpdateRowCache(key);
         metric.writeLatency.addNano(System.nanoTime() - start);
+        if(timeDelta < Long.MAX_VALUE)
+            metric.colUpdateTimeDeltaHistogram.update(timeDelta);
     }
 
     /**
@@ -1367,7 +1364,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
 
     void replaceFlushed(Memtable memtable, SSTableReader sstable)
     {
-        compactionStrategy.replaceFlushed(memtable, sstable);
+        compactionStrategyWrapper.replaceFlushed(memtable, sstable);
     }
 
     public boolean isValid()
@@ -1807,7 +1804,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         {
             public List<SSTableReader> apply(DataTracker.View view)
             {
-                return compactionStrategy.filterSSTablesForReads(view.intervalTree.search(key));
+                return compactionStrategyWrapper.filterSSTablesForReads(view.intervalTree.search(key));
             }
         };
     }
@@ -1822,7 +1819,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         {
             public List<SSTableReader> apply(DataTracker.View view)
             {
-                return compactionStrategy.filterSSTablesForReads(view.sstablesInBounds(rowBounds));
+                return compactionStrategyWrapper.filterSSTablesForReads(view.sstablesInBounds(rowBounds));
             }
         };
     }
@@ -2139,8 +2136,9 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         snapshotWithoutFlush(snapshotName, null);
     }
 
-    public void snapshotWithoutFlush(String snapshotName, Predicate<SSTableReader> predicate)
+    public Set<SSTableReader> snapshotWithoutFlush(String snapshotName, Predicate<SSTableReader> predicate)
     {
+        Set<SSTableReader> snapshottedSSTables = new HashSet<>();
         for (ColumnFamilyStore cfs : concatWithIndexes())
         {
             DataTracker.View currentView = cfs.markCurrentViewReferenced();
@@ -2159,6 +2157,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
                     filesJSONArr.add(ssTable.descriptor.relativeFilenameFor(Component.DATA));
                     if (logger.isDebugEnabled())
                         logger.debug("Snapshot for {} keyspace data file {} created in {}", keyspace, ssTable.getFilename(), snapshotDirectory);
+                    snapshottedSSTables.add(ssTable);
                 }
 
                 writeSnapshotManifest(filesJSONArr, snapshotName);
@@ -2168,21 +2167,24 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
                 SSTableReader.releaseReferences(currentView.sstables);
             }
         }
+        return snapshottedSSTables;
     }
 
     private void writeSnapshotManifest(final JSONArray filesJSONArr, final String snapshotName)
     {
         final File manifestFile = directories.getSnapshotManifestFile(snapshotName);
-        final JSONObject manifestJSON = new JSONObject();
-        manifestJSON.put("files", filesJSONArr);
 
         try
         {
             if (!manifestFile.getParentFile().exists())
                 manifestFile.getParentFile().mkdirs();
-            PrintStream out = new PrintStream(manifestFile);
-            out.println(manifestJSON.toJSONString());
-            out.close();
+            
+            try (PrintStream out = new PrintStream(manifestFile))
+            {
+                final JSONObject manifestJSON = new JSONObject();
+                manifestJSON.put("files", filesJSONArr);
+                out.println(manifestJSON.toJSONString());
+            }
         }
         catch (IOException e)
         {
@@ -2193,7 +2195,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
     public List<SSTableReader> getSnapshotSSTableReader(String tag) throws IOException
     {
         Map<Descriptor, Set<Component>> snapshots = directories.sstableLister().snapshots(tag).list();
-        List<SSTableReader> readers = new ArrayList<SSTableReader>(snapshots.size());
+        List<SSTableReader> readers = new ArrayList<>(snapshots.size());
         for (Map.Entry<Descriptor, Set<Component>> entries : snapshots.entrySet())
             readers.add(SSTableReader.open(entries.getKey(), entries.getValue(), metadata, partitioner));
         return readers;
@@ -2204,15 +2206,15 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
      *
      * @param snapshotName the name of the associated with the snapshot
      */
-    public void snapshot(String snapshotName)
+    public Set<SSTableReader> snapshot(String snapshotName)
     {
-        snapshot(snapshotName, null);
+        return snapshot(snapshotName, null);
     }
 
-    public void snapshot(String snapshotName, Predicate<SSTableReader> predicate)
+    public Set<SSTableReader> snapshot(String snapshotName, Predicate<SSTableReader> predicate)
     {
         forceBlockingFlush();
-        snapshotWithoutFlush(snapshotName, predicate);
+        return snapshotWithoutFlush(snapshotName, predicate);
     }
 
     public boolean snapshotExists(String snapshotName)
@@ -2584,7 +2586,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
     {
         // we don't use CompactionStrategy.pause since we don't want users flipping that on and off
         // during runWithCompactionsDisabled
-        this.compactionStrategy.disable();
+        this.compactionStrategyWrapper.disable();
     }
 
     public void enableAutoCompaction()
@@ -2599,7 +2601,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
     @VisibleForTesting
     public void enableAutoCompaction(boolean waitForFutures)
     {
-        this.compactionStrategy.enable();
+        this.compactionStrategyWrapper.enable();
         List<Future<?>> futures = CompactionManager.instance.submitBackground(this);
         if (waitForFutures)
             FBUtilities.waitOnFutures(futures);
@@ -2607,7 +2609,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
 
     public boolean isAutoCompactionDisabled()
     {
-        return !this.compactionStrategy.isEnabled();
+        return !this.compactionStrategyWrapper.isEnabled();
     }
 
     /*
@@ -2621,8 +2623,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
 
     public AbstractCompactionStrategy getCompactionStrategy()
     {
-        assert compactionStrategy != null : "No compaction strategy set yet";
-        return compactionStrategy;
+        return compactionStrategyWrapper;
     }
 
     public void setCompactionThresholds(int minThreshold, int maxThreshold)
@@ -2631,10 +2632,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
 
         minCompactionThreshold.set(minThreshold);
         maxCompactionThreshold.set(maxThreshold);
-
-        // this is called as part of CompactionStrategy constructor; avoid circular dependency by checking for null
-        if (compactionStrategy != null)
-            CompactionManager.instance.submitBackground(this);
+        CompactionManager.instance.submitBackground(this);
     }
 
     public int getMinimumCompactionThreshold()
@@ -2722,16 +2720,12 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
 
     public int getUnleveledSSTables()
     {
-        return this.compactionStrategy instanceof LeveledCompactionStrategy
-               ? ((LeveledCompactionStrategy) this.compactionStrategy).getLevelSize(0)
-               : 0;
+        return this.compactionStrategyWrapper.getUnleveledSSTables();
     }
 
     public int[] getSSTableCountPerLevel()
     {
-        return compactionStrategy instanceof LeveledCompactionStrategy
-               ? ((LeveledCompactionStrategy) compactionStrategy).getAllLevelSize()
-               : null;
+        return compactionStrategyWrapper.getSSTableCountPerLevel();
     }
 
     public static class ViewFragment
@@ -2779,7 +2773,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
     {
         assert data.getCompacting().isEmpty() : data.getCompacting();
 
-        List<SSTableReader> truncatedSSTables = new ArrayList<SSTableReader>();
+        List<SSTableReader> truncatedSSTables = new ArrayList<>();
 
         for (SSTableReader sstable : getSSTables())
         {

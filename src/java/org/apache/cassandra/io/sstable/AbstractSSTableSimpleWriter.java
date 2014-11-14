@@ -24,13 +24,15 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.context.CounterContext;
 import org.apache.cassandra.dht.IPartitioner;
-import org.apache.cassandra.io.sstable.metadata.MetadataCollector;
+import org.apache.cassandra.io.sstable.format.SSTableFormat;
+import org.apache.cassandra.io.sstable.format.SSTableWriter;
 import org.apache.cassandra.service.ActiveRepairService;
 import org.apache.cassandra.utils.CounterId;
 import org.apache.cassandra.utils.Pair;
@@ -43,6 +45,9 @@ public abstract class AbstractSSTableSimpleWriter implements Closeable
     protected ColumnFamily columnFamily;
     protected ByteBuffer currentSuperColumn;
     protected final CounterId counterid = CounterId.generate();
+    private SSTableFormat.Type formatType = DatabaseDescriptor.getSSTableFormat();
+    protected static AtomicInteger generation = new AtomicInteger(0);
+
 
     public AbstractSSTableSimpleWriter(File directory, CFMetaData metadata, IPartitioner partitioner)
     {
@@ -51,19 +56,18 @@ public abstract class AbstractSSTableSimpleWriter implements Closeable
         DatabaseDescriptor.setPartitioner(partitioner);
     }
 
+    protected void setSSTableFormatType(SSTableFormat.Type type)
+    {
+        this.formatType = type;
+    }
+
     protected SSTableWriter getWriter()
     {
-        return new SSTableWriter(
-            makeFilename(directory, metadata.ksName, metadata.cfName),
-            0, // We don't care about the bloom filter
-            ActiveRepairService.UNREPAIRED_SSTABLE,
-            metadata,
-            DatabaseDescriptor.getPartitioner(),
-            new MetadataCollector(metadata.comparator));
+        return SSTableWriter.create(Descriptor.fromFilename(makeFilename(directory, metadata.ksName, metadata.cfName, formatType)), 0, ActiveRepairService.UNREPAIRED_SSTABLE);
     }
 
     // find available generation and pick up filename from that
-    protected static String makeFilename(File directory, final String keyspace, final String columnFamily)
+    protected static String makeFilename(File directory, final String keyspace, final String columnFamily, final SSTableFormat.Type fmt)
     {
         final Set<Descriptor> existing = new HashSet<Descriptor>();
         directory.list(new FilenameFilter()
@@ -81,10 +85,16 @@ public abstract class AbstractSSTableSimpleWriter implements Closeable
                 return false;
             }
         });
-        int maxGen = 0;
+        int maxGen = generation.getAndIncrement();
         for (Descriptor desc : existing)
-            maxGen = Math.max(maxGen, desc.generation);
-        return new Descriptor(directory, keyspace, columnFamily, maxGen + 1, Descriptor.Type.TEMP).filenameFor(Component.DATA);
+        {
+            while (desc.generation > maxGen)
+            {
+                maxGen = generation.getAndIncrement();
+            }
+        }
+
+        return new Descriptor(directory, keyspace, columnFamily, maxGen + 1, Descriptor.Type.TEMP, fmt).filenameFor(Component.DATA);
     }
 
     /**

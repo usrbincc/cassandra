@@ -39,6 +39,7 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.primitives.Longs;
 
 import org.apache.cassandra.cache.RefCountedMemory;
+import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.TypeSizes;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.io.FSReadError;
@@ -47,6 +48,7 @@ import org.apache.cassandra.io.IVersionedSerializer;
 import org.apache.cassandra.io.sstable.Component;
 import org.apache.cassandra.io.sstable.CorruptSSTableException;
 import org.apache.cassandra.io.sstable.Descriptor;
+import org.apache.cassandra.io.sstable.format.Version;
 import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.io.util.Memory;
@@ -79,7 +81,7 @@ public class CompressionMetadata
     public static CompressionMetadata create(String dataFilePath)
     {
         Descriptor desc = Descriptor.fromFilename(dataFilePath);
-        return new CompressionMetadata(desc.filenameFor(Component.COMPRESSION_INFO), new File(dataFilePath).length(), desc.version.hasPostCompressionAdlerChecksums);
+        return new CompressionMetadata(desc.filenameFor(Component.COMPRESSION_INFO), new File(dataFilePath).length(), desc.version.hasPostCompressionAdlerChecksums());
     }
 
     @VisibleForTesting
@@ -102,7 +104,7 @@ public class CompressionMetadata
         {
             String compressorName = stream.readUTF();
             int optionCount = stream.readInt();
-            Map<String, String> options = new HashMap<>();
+            Map<String, String> options = new HashMap<>(optionCount);
             for (int i = 0; i < optionCount; ++i)
             {
                 String key = stream.readUTF();
@@ -262,6 +264,8 @@ public class CompressionMetadata
         private int maxCount = 100;
         private RefCountedMemory offsets = new RefCountedMemory(maxCount * 8);
         private int count = 0;
+        private Version latestVersion =  DatabaseDescriptor.getSSTableFormat().info.getLatestVersion();
+
 
         private Writer(CompressionParameters parameters, String path)
         {
@@ -311,14 +315,14 @@ public class CompressionMetadata
 
         public CompressionMetadata openEarly(long dataLength, long compressedLength)
         {
-            return new CompressionMetadata(filePath, parameters, offsets, count * 8L, dataLength, compressedLength, Descriptor.Version.CURRENT.hasPostCompressionAdlerChecksums);
+            return new CompressionMetadata(filePath, parameters, offsets, count * 8L, dataLength, compressedLength, latestVersion.hasPostCompressionAdlerChecksums());
         }
 
         public CompressionMetadata openAfterClose(long dataLength, long compressedLength)
         {
             RefCountedMemory newOffsets = offsets.copy(count * 8L);
             offsets.unreference();
-            return new CompressionMetadata(filePath, parameters, newOffsets, count * 8L, dataLength, compressedLength, Descriptor.Version.CURRENT.hasPostCompressionAdlerChecksums);
+            return new CompressionMetadata(filePath, parameters, newOffsets, count * 8L, dataLength, compressedLength, latestVersion.hasPostCompressionAdlerChecksums());
         }
 
         /**
@@ -336,6 +340,8 @@ public class CompressionMetadata
         /**
          * Reset the writer so that the next chunk offset written will be the
          * one of {@code chunkIndex}.
+         * 
+         * @param chunkIndex the next index to write
          */
         public void resetAndTruncate(int chunkIndex)
         {

@@ -22,9 +22,12 @@ import java.io.*;
 import java.util.*;
 
 import com.google.common.base.Throwables;
+import com.google.common.collect.Sets;
 
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.io.sstable.*;
+import org.apache.cassandra.io.sstable.format.SSTableReader;
+import org.apache.cassandra.io.sstable.format.SSTableWriter;
 import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.io.util.RandomAccessReader;
 import org.apache.cassandra.service.ActiveRepairService;
@@ -46,6 +49,7 @@ public class Scrubber implements Closeable
     private final RandomAccessReader dataFile;
     private final RandomAccessReader indexFile;
     private final ScrubInfo scrubInfo;
+    private final RowIndexEntry.IndexSerializer rowIndexEntrySerializer;
 
     private final boolean isOffline;
 
@@ -80,6 +84,8 @@ public class Scrubber implements Closeable
         this.skipCorrupted = skipCorrupted;
         this.isOffline = isOffline;
 
+        this.rowIndexEntrySerializer = sstable.descriptor.version.getSSTableFormat().getIndexSerializer(sstable.metadata);
+
         // Calculate the expected compacted filesize
         this.destination = cfs.directories.getDirectoryForNewSSTables();
         if (destination == null)
@@ -107,13 +113,14 @@ public class Scrubber implements Closeable
     public void scrub()
     {
         outputHandler.output(String.format("Scrubbing %s (%s bytes)", sstable, dataFile.length()));
-        SSTableRewriter writer = new SSTableRewriter(cfs, new HashSet<>(Collections.singleton(sstable)), sstable.maxDataAge, OperationType.SCRUB, isOffline);
+        Set<SSTableReader> oldSSTable = Sets.newHashSet(sstable);
+        SSTableRewriter writer = new SSTableRewriter(cfs, oldSSTable, sstable.maxDataAge, isOffline);
         try
         {
             ByteBuffer nextIndexKey = ByteBufferUtil.readWithShortLength(indexFile);
             {
                 // throw away variable so we don't have a side effect in the assert
-                long firstRowPositionFromIndex = sstable.metadata.comparator.rowIndexEntrySerializer().deserialize(indexFile, sstable.descriptor.version).position;
+                long firstRowPositionFromIndex = rowIndexEntrySerializer.deserialize(indexFile, sstable.descriptor.version).position;
                 assert firstRowPositionFromIndex == 0 : firstRowPositionFromIndex;
             }
 
@@ -147,7 +154,7 @@ public class Scrubber implements Closeable
                     nextIndexKey = indexFile.isEOF() ? null : ByteBufferUtil.readWithShortLength(indexFile);
                     nextRowPositionFromIndex = indexFile.isEOF()
                                              ? dataFile.length()
-                                             : sstable.metadata.comparator.rowIndexEntrySerializer().deserialize(indexFile, sstable.descriptor.version).position;
+                                             : rowIndexEntrySerializer.deserialize(indexFile, sstable.descriptor.version).position;
                 }
                 catch (Throwable th)
                 {
@@ -177,7 +184,7 @@ public class Scrubber implements Closeable
                     if (dataSize > dataFile.length())
                         throw new IOError(new IOException("Impossible row size " + dataSize));
 
-                    SSTableIdentityIterator atoms = new SSTableIdentityIterator(sstable, dataFile, key, dataSize, true);
+                    SSTableIdentityIterator atoms = new SSTableIdentityIterator(sstable, dataFile, key, true);
                     if (prevKey != null && prevKey.compareTo(key) > 0)
                     {
                         saveOutOfOrderRow(prevKey, key, atoms);
@@ -206,7 +213,7 @@ public class Scrubber implements Closeable
                         key = sstable.partitioner.decorateKey(currentIndexKey);
                         try
                         {
-                            SSTableIdentityIterator atoms = new SSTableIdentityIterator(sstable, dataFile, key, dataSize, true);
+                            SSTableIdentityIterator atoms = new SSTableIdentityIterator(sstable, dataFile, key, true);
                             if (prevKey != null && prevKey.compareTo(key) > 0)
                             {
                                 saveOutOfOrderRow(prevKey, key, atoms);
@@ -256,9 +263,11 @@ public class Scrubber implements Closeable
             }
 
             // finish obsoletes the old sstable
-            writer.finish(!isOffline, badRows > 0 ? ActiveRepairService.UNREPAIRED_SSTABLE : sstable.getSSTableMetadata().repairedAt);
-            if (!writer.finished().isEmpty())
-                newSstable = writer.finished().get(0);
+            List<SSTableReader> finished = writer.finish(badRows > 0 ? ActiveRepairService.UNREPAIRED_SSTABLE : sstable.getSSTableMetadata().repairedAt);
+            if (!finished.isEmpty())
+                newSstable = finished.get(0);
+            if (!isOffline)
+                cfs.getDataTracker().markCompactedSSTablesReplaced(oldSSTable, finished, OperationType.SCRUB);
         }
         catch (Throwable t)
         {

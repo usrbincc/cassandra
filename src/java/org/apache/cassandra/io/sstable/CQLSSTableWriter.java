@@ -28,6 +28,7 @@ import java.util.List;
 import java.util.Map;
 
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.Iterables;
 
 import org.apache.cassandra.cql3.statements.*;
 import org.apache.cassandra.cql3.*;
@@ -39,6 +40,7 @@ import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.dht.Murmur3Partitioner;
 import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.exceptions.RequestValidationException;
+import org.apache.cassandra.io.sstable.format.SSTableFormat;
 import org.apache.cassandra.locator.AbstractReplicationStrategy;
 import org.apache.cassandra.service.ClientState;
 import org.apache.cassandra.utils.Pair;
@@ -272,6 +274,8 @@ public class CQLSSTableWriter implements Closeable
         private File directory;
         private IPartitioner partitioner = new Murmur3Partitioner();
 
+        protected SSTableFormat.Type formatType = null;
+
         private CFMetaData schema;
         private UpdateStatement insert;
         private List<ColumnSpecification> boundNames;
@@ -279,7 +283,7 @@ public class CQLSSTableWriter implements Closeable
         private boolean sorted = false;
         private long bufferSizeInMB = 128;
 
-        private Builder() {}
+        protected Builder() {}
 
         /**
          * The directory where to write the sstables.
@@ -335,25 +339,31 @@ public class CQLSSTableWriter implements Closeable
         {
             try
             {
-                this.schema = getStatement(schema, CreateTableStatement.class, "CREATE TABLE").left.getCFMetaData().rebuild();
-
-                // We need to register the keyspace/table metadata through Schema, otherwise we won't be able to properly
-                // build the insert statement in using().
-                if (Schema.instance.getKSMetaData(this.schema.ksName) == null)
+                synchronized (CQLSSTableWriter.class)
                 {
-                    KSMetaData ksm = KSMetaData.newKeyspace(this.schema.ksName,
-                                                            AbstractReplicationStrategy.getClass("org.apache.cassandra.locator.SimpleStrategy"),
-                                                            ImmutableMap.of("replication_factor", "1"),
-                                                            true,
-                                                            Collections.singleton(this.schema));
-                    Schema.instance.load(ksm);
-                }
-                else if (Schema.instance.getCFMetaData(this.schema.ksName, this.schema.cfName) == null)
-                {
-                    Schema.instance.load(this.schema);
-                }
+                    this.schema = getStatement(schema, CreateTableStatement.class, "CREATE TABLE").left.getCFMetaData().rebuild();
 
-                return this;
+                    // We need to register the keyspace/table metadata through Schema, otherwise we won't be able to properly
+                    // build the insert statement in using().
+                    KSMetaData ksm = Schema.instance.getKSMetaData(this.schema.ksName);
+                    if (ksm == null)
+                    {
+                        ksm = KSMetaData.newKeyspace(this.schema.ksName,
+                                AbstractReplicationStrategy.getClass("org.apache.cassandra.locator.SimpleStrategy"),
+                                ImmutableMap.of("replication_factor", "1"),
+                                true,
+                                Collections.singleton(this.schema));
+                        Schema.instance.load(ksm);
+                    }
+                    else if (Schema.instance.getCFMetaData(this.schema.ksName, this.schema.cfName) == null)
+                    {
+                        Schema.instance.load(this.schema);
+                        ksm = KSMetaData.cloneWith(ksm, Iterables.concat(ksm.cfMetaData().values(), Collections.singleton(this.schema)));
+                        Schema.instance.setKeyspaceDefinition(ksm);
+                        Keyspace.open(ksm.name).initCf(this.schema.cfId, this.schema.cfName, false);
+                    }
+                    return this;
+                }
             }
             catch (RequestValidationException e)
             {
@@ -484,6 +494,10 @@ public class CQLSSTableWriter implements Closeable
             AbstractSSTableSimpleWriter writer = sorted
                                                ? new SSTableSimpleWriter(directory, schema, partitioner)
                                                : new BufferedWriter(directory, schema, partitioner, bufferSizeInMB);
+
+            if (formatType != null)
+                writer.setSSTableFormatType(formatType);
+
             return new CQLSSTableWriter(writer, insert, boundNames);
         }
     }

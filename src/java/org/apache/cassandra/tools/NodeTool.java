@@ -40,14 +40,12 @@ import io.airlift.command.*;
 import org.apache.commons.lang3.StringUtils;
 
 import org.apache.cassandra.concurrent.JMXEnabledThreadPoolExecutorMBean;
-import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.db.ColumnFamilyStoreMBean;
-import org.apache.cassandra.db.Keyspace;
+import org.apache.cassandra.db.SystemKeyspace;
 import org.apache.cassandra.db.compaction.CompactionManagerMBean;
 import org.apache.cassandra.db.compaction.OperationType;
 import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.locator.EndpointSnitchInfoMBean;
-import org.apache.cassandra.locator.LocalStrategy;
 import org.apache.cassandra.net.MessagingServiceMBean;
 import org.apache.cassandra.repair.messages.RepairOption;
 import org.apache.cassandra.service.CacheServiceMBean;
@@ -56,6 +54,7 @@ import org.apache.cassandra.streaming.SessionInfo;
 import org.apache.cassandra.streaming.StreamState;
 import org.apache.cassandra.utils.EstimatedHistogram;
 import org.apache.cassandra.utils.FBUtilities;
+import org.apache.cassandra.utils.JVMStabilityInspector;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
@@ -128,6 +127,7 @@ public class NodeTool
                 ListSnapshots.class,
                 Status.class,
                 StatusBinary.class,
+                StatusGossip.class,
                 StatusThrift.class,
                 Stop.class,
                 StopDaemon.class,
@@ -900,18 +900,38 @@ public class NodeTool
             long[] estimatedRowSize = (long[]) probe.getColumnFamilyMetric(keyspace, cfname, "EstimatedRowSizeHistogram");
             long[] estimatedColumnCount = (long[]) probe.getColumnFamilyMetric(keyspace, cfname, "EstimatedColumnCountHistogram");
 
-            long[] bucketOffsets = new EstimatedHistogram().getBucketOffsets();
-            EstimatedHistogram rowSizeHist = new EstimatedHistogram(bucketOffsets, estimatedRowSize);
-            EstimatedHistogram columnCountHist = new EstimatedHistogram(bucketOffsets, estimatedColumnCount);
+            long[] rowSizeBucketOffsets = new EstimatedHistogram(estimatedRowSize.length).getBucketOffsets();
+            long[] columnCountBucketOffsets = new EstimatedHistogram(estimatedColumnCount.length).getBucketOffsets();
+            EstimatedHistogram rowSizeHist = new EstimatedHistogram(rowSizeBucketOffsets, estimatedRowSize);
+            EstimatedHistogram columnCountHist = new EstimatedHistogram(columnCountBucketOffsets, estimatedColumnCount);
 
             // build arrays to store percentile values
             double[] estimatedRowSizePercentiles = new double[7];
             double[] estimatedColumnCountPercentiles = new double[7];
             double[] offsetPercentiles = new double[]{0.5, 0.75, 0.95, 0.98, 0.99};
-            for (int i = 0; i < offsetPercentiles.length; i++)
+
+            if (rowSizeHist.isOverflowed())
             {
-                estimatedRowSizePercentiles[i] = rowSizeHist.percentile(offsetPercentiles[i]);
-                estimatedColumnCountPercentiles[i] = columnCountHist.percentile(offsetPercentiles[i]);
+                System.err.println(String.format("Row sizes are larger than %s, unable to calculate percentiles", rowSizeBucketOffsets[rowSizeBucketOffsets.length - 1]));
+                for (int i = 0; i < offsetPercentiles.length; i++)
+                        estimatedRowSizePercentiles[i] = Double.NaN;
+            }
+            else
+            {
+                for (int i = 0; i < offsetPercentiles.length; i++)
+                    estimatedRowSizePercentiles[i] = rowSizeHist.percentile(offsetPercentiles[i]);
+            }
+
+            if (columnCountHist.isOverflowed())
+            {
+                System.err.println(String.format("Column counts are larger than %s, unable to calculate percentiles", columnCountBucketOffsets[columnCountBucketOffsets.length - 1]));
+                for (int i = 0; i < estimatedColumnCountPercentiles.length; i++)
+                    estimatedColumnCountPercentiles[i] = Double.NaN;
+            }
+            else
+            {
+                for (int i = 0; i < offsetPercentiles.length; i++)
+                    estimatedColumnCountPercentiles[i] = columnCountHist.percentile(offsetPercentiles[i]);
             }
 
             // min value
@@ -960,7 +980,7 @@ public class NodeTool
 
             for (String keyspace : keyspaces)
             {
-                if (Keyspace.SYSTEM_KS.equals(keyspace))
+                if (SystemKeyspace.NAME.equals(keyspace))
                     continue;
 
                 try
@@ -2169,6 +2189,19 @@ public class NodeTool
         }
     }
 
+    @Command(name = "statusgossip", description = "Status of gossip")
+    public static class StatusGossip extends NodeToolCmd
+    {
+        @Override
+        public void execute(NodeProbe probe)
+        {
+            System.out.println(
+                    probe.isGossipRunning()
+                    ? "running"
+                    : "not running");
+        }
+    }
+
     @Command(name = "statusthrift", description = "Status of thrift server")
     public static class StatusThrift extends NodeToolCmd
     {
@@ -2204,8 +2237,9 @@ public class NodeTool
             try
             {
                 probe.stopCassandraDaemon();
-            } catch (Exception ignored)
+            } catch (Exception e)
             {
+                JVMStabilityInspector.inspectThrowable(e);
                 // ignored
             }
             System.out.println("Cassandra has shutdown.");
@@ -2338,7 +2372,7 @@ public class NodeTool
         }
     }
 
-    @Command(name = "disablehandoff", description = "Disable gossip (effectively marking the node down)")
+    @Command(name = "disablehandoff", description = "Disable storing hinted handoffs")
     public static class DisableHandoff extends NodeToolCmd
     {
         @Override

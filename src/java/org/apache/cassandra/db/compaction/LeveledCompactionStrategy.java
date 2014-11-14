@@ -35,6 +35,7 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Joiner;
 import com.google.common.collect.*;
 import com.google.common.primitives.Doubles;
+import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -43,14 +44,8 @@ import org.apache.cassandra.db.columniterator.OnDiskAtomIterator;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.exceptions.ConfigurationException;
-import org.apache.cassandra.io.sstable.SSTableReader;
-import org.apache.cassandra.notifications.INotification;
-import org.apache.cassandra.notifications.INotificationConsumer;
-import org.apache.cassandra.notifications.SSTableAddedNotification;
-import org.apache.cassandra.notifications.SSTableListChangedNotification;
-import org.apache.cassandra.notifications.SSTableRepairStatusChanged;
 
-public class LeveledCompactionStrategy extends AbstractCompactionStrategy implements INotificationConsumer
+public class LeveledCompactionStrategy extends AbstractCompactionStrategy
 {
     private static final Logger logger = LoggerFactory.getLogger(LeveledCompactionStrategy.class);
     private static final String SSTABLE_SIZE_OPTION = "sstable_size_in_mb";
@@ -82,24 +77,8 @@ public class LeveledCompactionStrategy extends AbstractCompactionStrategy implem
         }
         maxSSTableSizeInMB = configuredMaxSSTableSize;
 
-        manifest = LeveledManifest.create(cfs, this.maxSSTableSizeInMB, cfs.getSSTables(), localOptions);
+        manifest = new LeveledManifest(cfs, this.maxSSTableSizeInMB, localOptions);
         logger.debug("Created {}", manifest);
-    }
-
-    @Override
-    public void startup()
-    {
-        super.startup();
-        cfs.getDataTracker().subscribe(this);
-        logger.debug("{} subscribed to the data tracker.", this);
-    }
-
-    @Override
-    public void shutdown()
-    {
-        super.shutdown();
-        cfs.getDataTracker().unsubscribe(this);
-        logger.debug("{} unsubscribed from the data tracker.", this);
     }
 
     public int getLevelSize(int i)
@@ -160,6 +139,7 @@ public class LeveledCompactionStrategy extends AbstractCompactionStrategy implem
         }
     }
 
+    @Override
     public AbstractCompactionTask getUserDefinedTask(Collection<SSTableReader> sstables, int gcBefore)
     {
         throw new UnsupportedOperationException("LevelDB compaction strategy does not allow user-specified compactions");
@@ -230,24 +210,6 @@ public class LeveledCompactionStrategy extends AbstractCompactionStrategy implem
         return manifest.getEstimatedTasks();
     }
 
-    public void handleNotification(INotification notification, Object sender)
-    {
-        if (notification instanceof SSTableAddedNotification)
-        {
-            SSTableAddedNotification flushedNotification = (SSTableAddedNotification) notification;
-            manifest.add(flushedNotification.added);
-        }
-        else if (notification instanceof SSTableListChangedNotification)
-        {
-            SSTableListChangedNotification listChangedNotification = (SSTableListChangedNotification) notification;
-            manifest.replace(listChangedNotification.removed, listChangedNotification.added);
-        }
-        else if (notification instanceof SSTableRepairStatusChanged)
-        {
-            manifest.repairStatusChanged(((SSTableRepairStatusChanged) notification).sstable);
-        }
-    }
-
     public long getMaxSSTableBytes()
     {
         return maxSSTableSizeInMB * 1024L * 1024L;
@@ -258,10 +220,7 @@ public class LeveledCompactionStrategy extends AbstractCompactionStrategy implem
         Multimap<Integer, SSTableReader> byLevel = ArrayListMultimap.create();
         for (SSTableReader sstable : sstables)
         {
-            if (manifest.hasRepairedData() && !sstable.isRepaired())
-                byLevel.get(0).add(sstable);
-            else
-                byLevel.get(sstable.getSSTableLevel()).add(sstable);
+            byLevel.get(sstable.getSSTableLevel()).add(sstable);
         }
 
         List<ICompactionScanner> scanners = new ArrayList<ICompactionScanner>(sstables.size());
@@ -302,6 +261,18 @@ public class LeveledCompactionStrategy extends AbstractCompactionStrategy implem
         return new ScannerList(scanners);
     }
 
+    @Override
+    public void addSSTable(SSTableReader added)
+    {
+        manifest.add(added);
+    }
+
+    @Override
+    public void removeSSTable(SSTableReader sstable)
+    {
+        manifest.remove(sstable);
+    }
+
     // Lazily creates SSTableBoundedScanner for sstable that are assumed to be from the
     // same level (e.g. non overlapping) - see #4142
     private static class LeveledScanner extends AbstractIterator<OnDiskAtomIterator> implements ICompactionScanner
@@ -319,7 +290,7 @@ public class LeveledCompactionStrategy extends AbstractCompactionStrategy implem
             this.range = range;
 
             // add only sstables that intersect our range, and estimate how much data that involves
-            this.sstables = new ArrayList<SSTableReader>(sstables.size());
+            this.sstables = new ArrayList<>(sstables.size());
             long length = 0;
             for (SSTableReader sstable : sstables)
             {
@@ -342,10 +313,10 @@ public class LeveledCompactionStrategy extends AbstractCompactionStrategy implem
 
         public static List<SSTableReader> intersecting(Collection<SSTableReader> sstables, Range<Token> range)
         {
-            ArrayList<SSTableReader> filtered = new ArrayList<SSTableReader>();
+            ArrayList<SSTableReader> filtered = new ArrayList<>();
             for (SSTableReader sstable : sstables)
             {
-                Range<Token> sstableRange = new Range<Token>(sstable.first.getToken(), sstable.last.getToken(), sstable.partitioner);
+                Range<Token> sstableRange = new Range<>(sstable.first.getToken(), sstable.last.getToken(), sstable.partitioner);
                 if (range == null || sstableRange.intersects(range))
                     filtered.add(sstable);
             }

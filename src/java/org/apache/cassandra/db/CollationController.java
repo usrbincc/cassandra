@@ -35,7 +35,7 @@ import org.apache.cassandra.db.composites.CellName;
 import org.apache.cassandra.db.filter.NamesQueryFilter;
 import org.apache.cassandra.db.filter.QueryFilter;
 import org.apache.cassandra.db.marshal.CounterColumnType;
-import org.apache.cassandra.io.sstable.SSTableReader;
+import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.tracing.Tracing;
 import org.apache.cassandra.utils.SearchIterator;
@@ -124,6 +124,7 @@ public class CollationController
                     break;
 
                 Tracing.trace("Merging data from sstable {}", sstable.descriptor.generation);
+                sstable.incrementReadCount();
                 OnDiskAtomIterator iter = reducedFilter.getSSTableColumnIterator(sstable);
                 iterators.add(iter);
                 isEmpty = false;
@@ -150,7 +151,7 @@ public class CollationController
             // "hoist up" the requested data into a more recent sstable
             if (sstablesIterated > cfs.getMinimumCompactionThreshold()
                 && !cfs.isAutoCompactionDisabled()
-                && cfs.getCompactionStrategy() instanceof SizeTieredCompactionStrategy)
+                && cfs.getCompactionStrategy().shouldDefragment())
             {
                 Tracing.trace("Defragmenting requested data");
                 Mutation mutation = new Mutation(cfs.keyspace.getName(), filter.key.getKey(), returnCF.cloneMe());

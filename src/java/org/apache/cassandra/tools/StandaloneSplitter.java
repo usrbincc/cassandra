@@ -21,6 +21,7 @@ package org.apache.cassandra.tools;
 import java.io.File;
 import java.util.*;
 
+import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.commons.cli.*;
 
 import org.apache.cassandra.config.DatabaseDescriptor;
@@ -29,6 +30,7 @@ import org.apache.cassandra.db.Directories;
 import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.db.compaction.SSTableSplitter;
 import org.apache.cassandra.io.sstable.*;
+import org.apache.cassandra.utils.JVMStabilityInspector;
 import org.apache.cassandra.utils.Pair;
 
 import static org.apache.cassandra.tools.BulkLoader.CmdLineOptions;
@@ -109,7 +111,7 @@ public class StandaloneSplitter
 
             String snapshotName = "pre-split-" + System.currentTimeMillis();
 
-            List<SSTableReader> sstables = new ArrayList<SSTableReader>();
+            List<SSTableReader> sstables = new ArrayList<>();
             for (Map.Entry<Descriptor, Set<Component>> fn : parsedFilenames.entrySet())
             {
                 try
@@ -130,6 +132,7 @@ public class StandaloneSplitter
                 }
                 catch (Exception e)
                 {
+                    JVMStabilityInspector.inspectThrowable(e);
                     System.err.println(String.format("Error Loading %s: %s", fn.getKey(), e.getMessage()));
                     if (options.debug)
                         e.printStackTrace(System.err);

@@ -164,8 +164,8 @@ public class RepairOption
             {
                 dataCenters.add(tokenizer.nextToken().trim());
             }
+            option.getDataCenters().addAll(dataCenters);
         }
-        option.getDataCenters().addAll(dataCenters);
 
         // hosts
         String hostsStr = options.get(HOSTS_KEY);
@@ -177,21 +177,21 @@ public class RepairOption
             {
                 hosts.add(tokenizer.nextToken().trim());
             }
+            option.getHosts().addAll(hosts);
         }
-        option.getHosts().addAll(hosts);
 
         // columnfamilies
         String cfStr = options.get(COLUMNFAMILIES_KEY);
-        Collection<String> columnFamilies = new HashSet<>();
         if (cfStr != null)
         {
+            Collection<String> columnFamilies = new HashSet<>();
             StringTokenizer tokenizer = new StringTokenizer(cfStr, ",");
             while (tokenizer.hasMoreTokens())
             {
                 columnFamilies.add(tokenizer.nextToken().trim());
             }
+            option.getColumnFamilies().addAll(columnFamilies);
         }
-        option.getColumnFamilies().addAll(columnFamilies);
 
         // validate options
         if (jobThreads > MAX_JOB_THREADS)
@@ -219,22 +219,7 @@ public class RepairOption
 
     public RepairOption(boolean sequential, boolean primaryRange, boolean incremental, boolean trace, int jobThreads, Collection<Range<Token>> ranges)
     {
-        if (sequential && incremental)
-        {
-            String message = "It is not possible to mix sequential repair and incremental repairs.";
-            logger.error(message);
-            throw new IllegalArgumentException(message);
-        }
-
-        if (!FBUtilities.isUnix() && sequential)
-        {
-            logger.warn("Snapshot-based repair is not yet supported on Windows.  Reverting to parallel repair.");
-            this.sequential = false;
-        }
-        else
-        {
-            this.sequential = sequential;
-        }
+        this.sequential = sequential;
         this.primaryRange = primaryRange;
         this.incremental = incremental;
         this.trace = trace;

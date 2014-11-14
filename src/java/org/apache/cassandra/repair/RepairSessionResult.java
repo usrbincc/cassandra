@@ -15,14 +15,29 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.apache.cassandra.db;
+package org.apache.cassandra.repair;
 
-import org.apache.cassandra.thrift.InvalidRequestException;
+import java.util.Collection;
+import java.util.UUID;
 
-public class ColumnFamilyNotDefinedException extends InvalidRequestException
+import org.apache.cassandra.dht.Range;
+import org.apache.cassandra.dht.Token;
+
+/**
+ * Repair session result
+ */
+public class RepairSessionResult
 {
-    public ColumnFamilyNotDefinedException(String message)
+    public final UUID sessionId;
+    public final String keyspace;
+    public final Range<Token> range;
+    public final Collection<RepairResult> repairJobResults;
+
+    public RepairSessionResult(UUID sessionId, String keyspace, Range<Token> range, Collection<RepairResult> repairJobResults)
     {
-        super(message);
+        this.sessionId = sessionId;
+        this.keyspace = keyspace;
+        this.range = range;
+        this.repairJobResults = repairJobResults;
     }
 }

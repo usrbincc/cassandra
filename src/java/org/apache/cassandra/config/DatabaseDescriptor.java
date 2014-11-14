@@ -25,7 +25,6 @@ import java.net.NetworkInterface;
 import java.net.SocketException;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
@@ -38,6 +37,7 @@ import java.util.UUID;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.primitives.Longs;
+import org.apache.cassandra.io.sstable.format.SSTableFormat;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.apache.cassandra.auth.AllowAllAuthenticator;
@@ -65,8 +65,10 @@ import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.scheduler.IRequestScheduler;
 import org.apache.cassandra.scheduler.NoScheduler;
 import org.apache.cassandra.service.CacheService;
+import org.apache.cassandra.thrift.ThriftServer;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
+import org.apache.cassandra.utils.JVMStabilityInspector;
 import org.apache.cassandra.utils.memory.HeapPool;
 import org.apache.cassandra.utils.memory.NativePool;
 import org.apache.cassandra.utils.memory.MemtablePool;
@@ -91,12 +93,14 @@ public class DatabaseDescriptor
     private static IInternodeAuthenticator internodeAuthenticator;
 
     /* Hashing strategy Random or OPHF */
-    private static IPartitioner<?> partitioner;
+    private static IPartitioner partitioner;
     private static String paritionerName;
 
     private static Config.DiskAccessMode indexAccessMode;
 
     private static Config conf;
+
+    private static SSTableFormat.Type sstable_format = SSTableFormat.Type.BIG;
 
     private static IAuthenticator authenticator = new AllowAllAuthenticator();
     private static IAuthorizer authorizer = new AllowAllAuthorizer();
@@ -121,6 +125,7 @@ public class DatabaseDescriptor
         }
         catch (Exception e)
         {
+            JVMStabilityInspector.inspectThrowable(e);
             throw new ExceptionInInitializerError(e.getMessage() + "\nFatal configuration error; unable to start. See log for stacktrace.");
         }
     }
@@ -397,6 +402,12 @@ public class DatabaseDescriptor
         if (conf.native_transport_max_frame_size_in_mb <= 0)
             throw new ConfigurationException("native_transport_max_frame_size_in_mb must be positive");
 
+        // fail early instead of OOMing (see CASSANDRA-8116)
+        if (ThriftServer.HSHA.equals(conf.rpc_server_type) && conf.rpc_max_threads == Integer.MAX_VALUE)
+            throw new ConfigurationException("The hsha rpc_server_type is not compatible with an rpc_max_threads " +
+                                             "setting of 'unlimited'.  Please see the comments in cassandra.yaml " +
+                                             "for rpc_server_type and rpc_max_threads.");
+
         /* end point snitch */
         if (conf.endpoint_snitch == null)
         {
@@ -574,13 +585,10 @@ public class DatabaseDescriptor
             conf.server_encryption_options = conf.encryption_options;
         }
 
-        // Hardcoded system keyspaces
-        List<KSMetaData> systemKeyspaces = Arrays.asList(KSMetaData.systemKeyspace());
-        assert systemKeyspaces.size() == Schema.systemKeyspaceNames.size();
-        for (KSMetaData ksmd : systemKeyspaces)
-            Schema.instance.load(ksmd);
+        // hardcoded system keyspace
+        Schema.instance.load(SystemKeyspace.definition());
 
-        /* Load the seeds for node contact points */
+        // load the seeds for node contact points
         if (conf.seed_provider == null)
         {
             throw new ConfigurationException("seeds configuration is missing; a minimum of one seed is required.");
@@ -615,7 +623,7 @@ public class DatabaseDescriptor
     /** load keyspace (keyspace) definitions, but do not initialize the keyspace instances. */
     public static void loadSchemas()
     {
-        ColumnFamilyStore schemaCFS = SystemKeyspace.schemaCFS(SystemKeyspace.SCHEMA_KEYSPACES_CF);
+        ColumnFamilyStore schemaCFS = SystemKeyspace.schemaCFS(SystemKeyspace.SCHEMA_KEYSPACES_TABLE);
 
         // if keyspace with definitions is empty try loading the old way
         if (schemaCFS.estimateKeys() == 0)
@@ -647,7 +655,7 @@ public class DatabaseDescriptor
                 {
                     public boolean accept(File pathname)
                     {
-                        return (pathname.isDirectory() && !Schema.systemKeyspaceNames.contains(pathname.getName()));
+                        return pathname.isDirectory() && !pathname.getName().equals(SystemKeyspace.NAME);
                     }
                 }).length;
 
@@ -720,7 +728,7 @@ public class DatabaseDescriptor
         }
     }
 
-    public static IPartitioner<?> getPartitioner()
+    public static IPartitioner getPartitioner()
     {
         return partitioner;
     }
@@ -731,7 +739,7 @@ public class DatabaseDescriptor
     }
 
     /* For tests ONLY, don't use otherwise or all hell will break loose */
-    public static void setPartitioner(IPartitioner<?> newPartitioner)
+    public static void setPartitioner(IPartitioner newPartitioner)
     {
         partitioner = newPartitioner;
     }
@@ -1542,6 +1550,12 @@ public class DatabaseDescriptor
     public static boolean getInterDCTcpNoDelay()
     {
         return conf.inter_dc_tcp_nodelay;
+    }
+
+
+    public static SSTableFormat.Type getSSTableFormat()
+    {
+        return sstable_format;
     }
 
     public static MemtablePool getMemtableAllocatorPool()

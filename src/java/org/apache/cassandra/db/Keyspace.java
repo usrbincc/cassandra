@@ -32,6 +32,7 @@ import java.util.concurrent.Future;
 
 import com.google.common.base.Function;
 import com.google.common.collect.Iterables;
+import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -44,7 +45,6 @@ import org.apache.cassandra.db.commitlog.ReplayPosition;
 import org.apache.cassandra.db.filter.QueryFilter;
 import org.apache.cassandra.db.index.SecondaryIndex;
 import org.apache.cassandra.db.index.SecondaryIndexManager;
-import org.apache.cassandra.io.sstable.SSTableReader;
 import org.apache.cassandra.locator.AbstractReplicationStrategy;
 import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.service.pager.QueryPagers;
@@ -57,7 +57,6 @@ import org.apache.cassandra.metrics.KeyspaceMetrics;
  */
 public class Keyspace
 {
-    public static final String SYSTEM_KS = "system";
     private static final int DEFAULT_PAGE_SIZE = 10000;
 
     private static final Logger logger = LoggerFactory.getLogger(Keyspace.class);
@@ -75,7 +74,7 @@ public class Keyspace
     public final OpOrder writeOrder = new OpOrder();
 
     /* ColumnFamilyStore per column family */
-    private final ConcurrentMap<UUID, ColumnFamilyStore> columnFamilyStores = new ConcurrentHashMap<UUID, ColumnFamilyStore>();
+    private final ConcurrentMap<UUID, ColumnFamilyStore> columnFamilyStores = new ConcurrentHashMap<>();
     private volatile AbstractReplicationStrategy replicationStrategy;
 
     public static final Function<String,Keyspace> keyspaceTransformer = new Function<String, Keyspace>()
@@ -94,7 +93,7 @@ public class Keyspace
 
     public static Keyspace open(String keyspaceName)
     {
-        assert initialized || keyspaceName.equals(SYSTEM_KS);
+        assert initialized || keyspaceName.equals(SystemKeyspace.NAME);
         return open(keyspaceName, Schema.instance, true);
     }
 
@@ -260,7 +259,7 @@ public class Keyspace
      */
     public List<SSTableReader> getAllSSTables()
     {
-        List<SSTableReader> list = new ArrayList<SSTableReader>(columnFamilyStores.size());
+        List<SSTableReader> list = new ArrayList<>(columnFamilyStores.size());
         for (ColumnFamilyStore cfStore : columnFamilyStores.values())
             list.addAll(cfStore.getSSTables());
         return list;
@@ -273,7 +272,7 @@ public class Keyspace
         createReplicationStrategy(metadata);
 
         this.metric = new KeyspaceMetrics(this);
-        for (CFMetaData cfm : new ArrayList<CFMetaData>(metadata.cfMetaData().values()))
+        for (CFMetaData cfm : new ArrayList<>(metadata.cfMetaData().values()))
         {
             logger.debug("Initializing {}.{}", getName(), cfm.cfName);
             initCf(cfm.cfId, cfm.cfName, loadSSTables);
@@ -425,7 +424,7 @@ public class Keyspace
 
     public List<Future<?>> flush()
     {
-        List<Future<?>> futures = new ArrayList<Future<?>>(columnFamilyStores.size());
+        List<Future<?>> futures = new ArrayList<>(columnFamilyStores.size());
         for (UUID cfId : columnFamilyStores.keySet())
             futures.add(columnFamilyStores.get(cfId).forceFlush());
         return futures;
@@ -443,7 +442,7 @@ public class Keyspace
 
     public static Iterable<Keyspace> system()
     {
-        return Iterables.transform(Schema.systemKeyspaceNames, keyspaceTransformer);
+        return Iterables.transform(Collections.singleton(SystemKeyspace.NAME), keyspaceTransformer);
     }
 
     @Override

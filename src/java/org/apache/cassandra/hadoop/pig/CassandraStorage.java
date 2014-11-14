@@ -35,6 +35,7 @@ import org.apache.cassandra.thrift.*;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.Hex;
+import org.apache.cassandra.utils.JVMStabilityInspector;
 import org.apache.hadoop.mapreduce.*;
 import org.apache.pig.Expression;
 import org.apache.pig.ResourceSchema;
@@ -224,7 +225,7 @@ public class CassandraStorage extends AbstractCassandraStorage
             Tuple tuple = keyToTuple(key, cfDef, parseType(cfDef.getKey_validation_class()));
             DefaultDataBag bag = new DefaultDataBag();
             // we must add all the indexed columns first to match the schema
-            Map<ByteBuffer, Boolean> added = new HashMap<ByteBuffer, Boolean>();
+            Map<ByteBuffer, Boolean> added = new HashMap<ByteBuffer, Boolean>(cfDef.column_metadata.size());
             // take care to iterate these in the same order as the schema does
             for (ColumnDef cdef : cfDef.column_metadata)
             {
@@ -236,7 +237,8 @@ public class CassandraStorage extends AbstractCassandraStorage
                 }
                 catch (Exception e)
                 {
-                    cql3Table = true;                  
+                    JVMStabilityInspector.inspectThrowable(e);
+                    cql3Table = true;
                 }
                 if (hasColumn)
                 {

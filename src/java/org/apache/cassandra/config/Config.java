@@ -294,6 +294,7 @@ public class Config
         stop,
         ignore,
         stop_paranoid,
+        die
     }
 
     public static enum CommitFailurePolicy
@@ -301,6 +302,7 @@ public class Config
         stop,
         stop_commit,
         ignore,
+        die,
     }
 
     public static enum RequestSchedulerId

@@ -31,11 +31,11 @@ import javax.management.ObjectName;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.*;
 import com.google.common.util.concurrent.RateLimiter;
+import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.concurrent.DebuggableScheduledThreadPoolExecutor;
-import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.cql3.UntypedResultSet;
 import org.apache.cassandra.db.compaction.CompactionManager;
@@ -44,7 +44,6 @@ import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.exceptions.WriteTimeoutException;
 import org.apache.cassandra.gms.FailureDetector;
 import org.apache.cassandra.io.sstable.Descriptor;
-import org.apache.cassandra.io.sstable.SSTableReader;
 import org.apache.cassandra.io.util.DataOutputBuffer;
 import org.apache.cassandra.net.MessageIn;
 import org.apache.cassandra.net.MessageOut;
@@ -97,7 +96,7 @@ public class BatchlogManager implements BatchlogManagerMBean
 
     public int countAllBatches()
     {
-        String query = String.format("SELECT count(*) FROM %s.%s", Keyspace.SYSTEM_KS, SystemKeyspace.BATCHLOG_CF);
+        String query = String.format("SELECT count(*) FROM %s.%s", SystemKeyspace.NAME, SystemKeyspace.BATCHLOG_TABLE);
         return (int) executeInternal(query).one().getLong("count");
     }
 
@@ -132,12 +131,12 @@ public class BatchlogManager implements BatchlogManagerMBean
     @VisibleForTesting
     static Mutation getBatchlogMutationFor(Collection<Mutation> mutations, UUID uuid, int version, long now)
     {
-        ColumnFamily cf = ArrayBackedSortedColumns.factory.create(CFMetaData.BatchlogCf);
-        CFRowAdder adder = new CFRowAdder(cf, CFMetaData.BatchlogCf.comparator.builder().build(), now);
+        ColumnFamily cf = ArrayBackedSortedColumns.factory.create(SystemKeyspace.BatchlogTable);
+        CFRowAdder adder = new CFRowAdder(cf, SystemKeyspace.BatchlogTable.comparator.builder().build(), now);
         adder.add("data", serializeMutations(mutations, version))
              .add("written_at", new Date(now / 1000))
              .add("version", version);
-        return new Mutation(Keyspace.SYSTEM_KS, UUIDType.instance.decompose(uuid), cf);
+        return new Mutation(SystemKeyspace.NAME, UUIDType.instance.decompose(uuid), cf);
     }
 
     private static ByteBuffer serializeMutations(Collection<Mutation> mutations, int version)
@@ -168,8 +167,8 @@ public class BatchlogManager implements BatchlogManagerMBean
         RateLimiter rateLimiter = RateLimiter.create(throttleInKB == 0 ? Double.MAX_VALUE : throttleInKB * 1024);
 
         UntypedResultSet page = executeInternal(String.format("SELECT id, data, written_at, version FROM %s.%s LIMIT %d",
-                                                              Keyspace.SYSTEM_KS,
-                                                              SystemKeyspace.BATCHLOG_CF,
+                                                              SystemKeyspace.NAME,
+                                                              SystemKeyspace.BATCHLOG_TABLE,
                                                               PAGE_SIZE));
 
         while (!page.isEmpty())
@@ -180,8 +179,8 @@ public class BatchlogManager implements BatchlogManagerMBean
                 break; // we've exhausted the batchlog, next query would be empty.
 
             page = executeInternal(String.format("SELECT id, data, written_at, version FROM %s.%s WHERE token(id) > token(?) LIMIT %d",
-                                                 Keyspace.SYSTEM_KS,
-                                                 SystemKeyspace.BATCHLOG_CF,
+                                                 SystemKeyspace.NAME,
+                                                 SystemKeyspace.BATCHLOG_TABLE,
                                                  PAGE_SIZE),
                                    id);
         }
@@ -193,8 +192,8 @@ public class BatchlogManager implements BatchlogManagerMBean
 
     private void deleteBatch(UUID id)
     {
-        Mutation mutation = new Mutation(Keyspace.SYSTEM_KS, UUIDType.instance.decompose(id));
-        mutation.delete(SystemKeyspace.BATCHLOG_CF, FBUtilities.timestampMicros());
+        Mutation mutation = new Mutation(SystemKeyspace.NAME, UUIDType.instance.decompose(id));
+        mutation.delete(SystemKeyspace.BATCHLOG_TABLE, FBUtilities.timestampMicros());
         mutation.apply();
     }
 
@@ -378,7 +377,7 @@ public class BatchlogManager implements BatchlogManagerMBean
         {
             Set<InetAddress> liveEndpoints = new HashSet<>();
             String ks = mutation.getKeyspaceName();
-            Token<?> tk = StorageService.getPartitioner().getToken(mutation.key());
+            Token tk = StorageService.getPartitioner().getToken(mutation.key());
 
             for (InetAddress endpoint : Iterables.concat(StorageService.instance.getNaturalEndpoints(ks, tk),
                                                          StorageService.instance.getTokenMetadata().pendingEndpointsFor(tk, ks)))
@@ -442,7 +441,7 @@ public class BatchlogManager implements BatchlogManagerMBean
     // force flush + compaction to reclaim space from the replayed batches
     private void cleanup() throws ExecutionException, InterruptedException
     {
-        ColumnFamilyStore cfs = Keyspace.open(Keyspace.SYSTEM_KS).getColumnFamilyStore(SystemKeyspace.BATCHLOG_CF);
+        ColumnFamilyStore cfs = Keyspace.open(SystemKeyspace.NAME).getColumnFamilyStore(SystemKeyspace.BATCHLOG_TABLE);
         cfs.forceBlockingFlush();
         Collection<Descriptor> descriptors = new ArrayList<>();
         for (SSTableReader sstr : cfs.getSSTables())

@@ -55,6 +55,11 @@ public abstract class Operation
         this.t = t;
     }
 
+    public boolean usesFunction(String ksName, String functionName)
+    {
+        return t != null && t.usesFunction(ksName, functionName);
+    }
+
     /**
      * @return whether the operation requires a read of the previous value to be executed
      * (only lists setterByIdx, discard and discardByIdx requires that).
@@ -130,7 +135,7 @@ public abstract class Operation
         /**
          * The name of the column affected by this delete operation.
          */
-        public ColumnIdentifier affectedColumn();
+        public ColumnIdentifier.Raw affectedColumn();
 
         /**
          * This method validates the operation (i.e. validate it is well typed)
@@ -162,7 +167,7 @@ public abstract class Operation
             if (receiver.type instanceof CounterColumnType)
                 throw new InvalidRequestException(String.format("Cannot set the value of counter column %s (counters can only be incremented/decremented, not set)", receiver.name));
 
-            if (!(receiver.type instanceof CollectionType))
+            if (!(receiver.type.isCollection()))
                 return new Constants.Setter(receiver, v);
 
             switch (((CollectionType)receiver.type).kind)
@@ -205,6 +210,8 @@ public abstract class Operation
         {
             if (!(receiver.type instanceof CollectionType))
                 throw new InvalidRequestException(String.format("Invalid operation (%s) for non collection column %s", toString(receiver), receiver.name));
+            else if (!(receiver.type.isMultiCell()))
+                throw new InvalidRequestException(String.format("Invalid operation (%s) for frozen collection column %s", toString(receiver), receiver.name));
 
             switch (((CollectionType)receiver.type).kind)
             {
@@ -254,6 +261,8 @@ public abstract class Operation
                     throw new InvalidRequestException(String.format("Invalid operation (%s) for non counter column %s", toString(receiver), receiver.name));
                 return new Constants.Adder(receiver, v);
             }
+            else if (!(receiver.type.isMultiCell()))
+                throw new InvalidRequestException(String.format("Invalid operation (%s) for frozen collection column %s", toString(receiver), receiver.name));
 
             switch (((CollectionType)receiver.type).kind)
             {
@@ -295,6 +304,8 @@ public abstract class Operation
                     throw new InvalidRequestException(String.format("Invalid operation (%s) for non counter column %s", toString(receiver), receiver.name));
                 return new Constants.Substracter(receiver, value.prepare(keyspace, receiver));
             }
+            else if (!(receiver.type.isMultiCell()))
+                throw new InvalidRequestException(String.format("Invalid operation (%s) for frozen collection column %s", toString(receiver), receiver.name));
 
             switch (((CollectionType)receiver.type).kind)
             {
@@ -307,7 +318,7 @@ public abstract class Operation
                     ColumnSpecification vr = new ColumnSpecification(receiver.ksName,
                                                                      receiver.cfName,
                                                                      receiver.name,
-                                                                     SetType.getInstance(((MapType)receiver.type).keys));
+                                                                     SetType.getInstance(((MapType)receiver.type).getKeysType(), false));
                     return new Sets.Discarder(receiver, value.prepare(keyspace, vr));
             }
             throw new AssertionError();
@@ -339,6 +350,8 @@ public abstract class Operation
 
             if (!(receiver.type instanceof ListType))
                 throw new InvalidRequestException(String.format("Invalid operation (%s) for non list column %s", toString(receiver), receiver.name));
+            else if (!(receiver.type.isMultiCell()))
+                throw new InvalidRequestException(String.format("Invalid operation (%s) for frozen list column %s", toString(receiver), receiver.name));
 
             return new Lists.Prepender(receiver, v);
         }
@@ -356,14 +369,14 @@ public abstract class Operation
 
     public static class ColumnDeletion implements RawDeletion
     {
-        private final ColumnIdentifier id;
+        private final ColumnIdentifier.Raw id;
 
-        public ColumnDeletion(ColumnIdentifier id)
+        public ColumnDeletion(ColumnIdentifier.Raw id)
         {
             this.id = id;
         }
 
-        public ColumnIdentifier affectedColumn()
+        public ColumnIdentifier.Raw affectedColumn()
         {
             return id;
         }
@@ -377,24 +390,26 @@ public abstract class Operation
 
     public static class ElementDeletion implements RawDeletion
     {
-        private final ColumnIdentifier id;
+        private final ColumnIdentifier.Raw id;
         private final Term.Raw element;
 
-        public ElementDeletion(ColumnIdentifier id, Term.Raw element)
+        public ElementDeletion(ColumnIdentifier.Raw id, Term.Raw element)
         {
             this.id = id;
             this.element = element;
         }
 
-        public ColumnIdentifier affectedColumn()
+        public ColumnIdentifier.Raw affectedColumn()
         {
             return id;
         }
 
         public Operation prepare(String keyspace, ColumnDefinition receiver) throws InvalidRequestException
         {
-            if (!(receiver.type instanceof CollectionType))
+            if (!(receiver.type.isCollection()))
                 throw new InvalidRequestException(String.format("Invalid deletion operation for non collection column %s", receiver.name));
+            else if (!(receiver.type.isMultiCell()))
+                throw new InvalidRequestException(String.format("Invalid deletion operation for frozen collection column %s", receiver.name));
 
             switch (((CollectionType)receiver.type).kind)
             {

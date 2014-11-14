@@ -24,13 +24,13 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
 
+import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.DataTracker;
 import org.apache.cassandra.db.DecoratedKey;
-import org.apache.cassandra.io.sstable.SSTableReader;
 import org.apache.cassandra.utils.AlwaysPresentFilter;
 
 /**
@@ -92,12 +92,11 @@ public class CompactionController implements AutoCloseable
      * Finds expired sstables
      *
      * works something like this;
-     * 1. find "global" minTimestamp of overlapping sstables (excluding the possibly droppable ones)
-     * 2. build a list of candidates to be dropped
-     * 3. sort the candidate list, biggest maxTimestamp first in list
-     * 4. check if the candidates to be dropped actually can be dropped (maxTimestamp < global minTimestamp) and it is included in the compaction
-     *    - if not droppable, update global minTimestamp and remove from candidates
-     * 5. return candidates.
+     * 1. find "global" minTimestamp of overlapping sstables and compacting sstables containing any non-expired data
+     * 2. build a list of fully expired candidates
+     * 3. check if the candidates to be dropped actually can be dropped (maxTimestamp < global minTimestamp)
+     *    - if not droppable, remove from candidates
+     * 4. return candidates.
      *
      * @param cfStore
      * @param compacting we take the drop-candidates from this set, it is usually the sstables included in the compaction
@@ -112,7 +111,7 @@ public class CompactionController implements AutoCloseable
         if (compacting == null)
             return Collections.<SSTableReader>emptySet();
 
-        List<SSTableReader> candidates = new ArrayList<SSTableReader>();
+        List<SSTableReader> candidates = new ArrayList<>();
 
         long minTimestamp = Long.MAX_VALUE;
 
@@ -127,10 +126,10 @@ public class CompactionController implements AutoCloseable
                 minTimestamp = Math.min(minTimestamp, candidate.getMinTimestamp());
         }
 
-        // we still need to keep candidates that might shadow something in a
-        // non-candidate sstable. And if we remove a sstable from the candidates, we
-        // must take it's timestamp into account (hence the sorting below).
-        Collections.sort(candidates, SSTableReader.maxTimestampComparator);
+        // At this point, minTimestamp denotes the lowest timestamp of any relevant
+        // SSTable that contains a constructive value. candidates contains all the
+        // candidates with no constructive values. The ones out of these that have
+        // (getMaxTimestamp() < minTimestamp) serve no purpose anymore.
 
         Iterator<SSTableReader> iterator = candidates.iterator();
         while (iterator.hasNext())
@@ -138,7 +137,6 @@ public class CompactionController implements AutoCloseable
             SSTableReader candidate = iterator.next();
             if (candidate.getMaxTimestamp() >= minTimestamp)
             {
-                minTimestamp = Math.min(candidate.getMinTimestamp(), minTimestamp);
                 iterator.remove();
             }
             else

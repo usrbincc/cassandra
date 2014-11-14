@@ -27,13 +27,12 @@ import org.apache.cassandra.cql3.UntypedResultSet;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.composites.Composite;
 import org.apache.cassandra.db.marshal.UTF8Type;
-import org.apache.cassandra.thrift.TriggerDef;
 
 public class TriggerDefinition
 {
-    private static final String TRIGGER_NAME = "trigger_name";
-    private static final String TRIGGER_OPTIONS = "trigger_options";
-    private static final String CLASS = "class";
+    public static final String TRIGGER_NAME = "trigger_name";
+    public static final String TRIGGER_OPTIONS = "trigger_options";
+    public static final String CLASS = "class";
 
     public final String name;
 
@@ -41,7 +40,7 @@ public class TriggerDefinition
     // Proper trigger parametrization will be added later.
     public final String classOption;
 
-    TriggerDefinition(String name, String classOption)
+    public TriggerDefinition(String name, String classOption)
     {
         this.name = name;
         this.classOption = classOption;
@@ -61,7 +60,7 @@ public class TriggerDefinition
     public static List<TriggerDefinition> fromSchema(Row serializedTriggers)
     {
         List<TriggerDefinition> triggers = new ArrayList<>();
-        String query = String.format("SELECT * FROM %s.%s", Keyspace.SYSTEM_KS, SystemKeyspace.SCHEMA_TRIGGERS_CF);
+        String query = String.format("SELECT * FROM %s.%s", SystemKeyspace.NAME, SystemKeyspace.SCHEMA_TRIGGERS_TABLE);
         for (UntypedResultSet.Row row : QueryProcessor.resultify(query, serializedTriggers))
         {
             String name = row.getString(TRIGGER_NAME);
@@ -80,9 +79,9 @@ public class TriggerDefinition
      */
     public void toSchema(Mutation mutation, String cfName, long timestamp)
     {
-        ColumnFamily cf = mutation.addOrGet(SystemKeyspace.SCHEMA_TRIGGERS_CF);
+        ColumnFamily cf = mutation.addOrGet(SystemKeyspace.SCHEMA_TRIGGERS_TABLE);
 
-        CFMetaData cfm = CFMetaData.SchemaTriggersCf;
+        CFMetaData cfm = SystemKeyspace.SchemaTriggersTable;
         Composite prefix = cfm.comparator.make(cfName, name);
         CFRowAdder adder = new CFRowAdder(cf, prefix, timestamp);
 
@@ -98,40 +97,11 @@ public class TriggerDefinition
      */
     public void deleteFromSchema(Mutation mutation, String cfName, long timestamp)
     {
-        ColumnFamily cf = mutation.addOrGet(SystemKeyspace.SCHEMA_TRIGGERS_CF);
+        ColumnFamily cf = mutation.addOrGet(SystemKeyspace.SCHEMA_TRIGGERS_TABLE);
         int ldt = (int) (System.currentTimeMillis() / 1000);
 
-        Composite prefix = CFMetaData.SchemaTriggersCf.comparator.make(cfName, name);
+        Composite prefix = SystemKeyspace.SchemaTriggersTable.comparator.make(cfName, name);
         cf.addAtom(new RangeTombstone(prefix, prefix.end(), timestamp, ldt));
-    }
-
-    public static TriggerDefinition fromThrift(TriggerDef thriftDef)
-    {
-        return new TriggerDefinition(thriftDef.getName(), thriftDef.getOptions().get(CLASS));
-    }
-
-    public TriggerDef toThrift()
-    {
-        TriggerDef td = new TriggerDef();
-        td.setName(name);
-        td.setOptions(Collections.singletonMap(CLASS, classOption));
-        return td;
-    }
-
-    public static Map<String, TriggerDefinition> fromThrift(List<TriggerDef> thriftDefs)
-    {
-        Map<String, TriggerDefinition> triggerDefinitions = new HashMap<>();
-        for (TriggerDef thriftDef : thriftDefs)
-            triggerDefinitions.put(thriftDef.getName(), fromThrift(thriftDef));
-        return triggerDefinitions;
-    }
-
-    public static List<TriggerDef> toThrift(Map<String, TriggerDefinition> triggers)
-    {
-        List<TriggerDef> thriftDefs = new ArrayList<>(triggers.size());
-        for (TriggerDefinition def : triggers.values())
-            thriftDefs.add(def.toThrift());
-        return thriftDefs;
     }
 
     @Override

@@ -74,7 +74,8 @@ public final class MessagingService implements MessagingServiceMBean
     public static final int VERSION_12 = 6;
     public static final int VERSION_20 = 7;
     public static final int VERSION_21 = 8;
-    public static final int current_version = VERSION_21;
+    public static final int VERSION_30 = 9;
+    public static final int current_version = VERSION_30;
 
     public static final String FAILURE_CALLBACK_PARAM = "CAL_BAC";
     public static final byte[] ONE_BYTE = new byte[1];
@@ -918,6 +919,7 @@ public final class MessagingService implements MessagingServiceMBean
                     }
 
                     socket.setKeepAlive(true);
+                    socket.setSoTimeout(2 * OutboundTcpConnection.WAIT_FOR_VERSION_MAX_TIME);
                     // determine the connection type to decide whether to buffer
                     DataInputStream in = new DataInputStream(socket.getInputStream());
                     MessagingService.validateMagic(in.readInt());
@@ -925,6 +927,7 @@ public final class MessagingService implements MessagingServiceMBean
                     boolean isStream = MessagingService.getBits(header, 3, 1) == 1;
                     int version = MessagingService.getBits(header, 15, 8);
                     logger.debug("Connection version {} from {}", version, socket.getInetAddress());
+                    socket.setSoTimeout(0);
 
                     Thread thread = isStream
                                   ? new IncomingStreamingConnection(version, socket)
@@ -965,7 +968,7 @@ public final class MessagingService implements MessagingServiceMBean
 
     public Map<String, Integer> getCommandPendingTasks()
     {
-        Map<String, Integer> pendingTasks = new HashMap<String, Integer>();
+        Map<String, Integer> pendingTasks = new HashMap<String, Integer>(connectionManagers.size());
         for (Map.Entry<InetAddress, OutboundTcpConnectionPool> entry : connectionManagers.entrySet())
             pendingTasks.put(entry.getKey().getHostAddress(), entry.getValue().cmdCon.getPendingMessages());
         return pendingTasks;
@@ -979,7 +982,7 @@ public final class MessagingService implements MessagingServiceMBean
 
     public Map<String, Long> getCommandCompletedTasks()
     {
-        Map<String, Long> completedTasks = new HashMap<String, Long>();
+        Map<String, Long> completedTasks = new HashMap<String, Long>(connectionManagers.size());
         for (Map.Entry<InetAddress, OutboundTcpConnectionPool> entry : connectionManagers.entrySet())
             completedTasks.put(entry.getKey().getHostAddress(), entry.getValue().cmdCon.getCompletedMesssages());
         return completedTasks;
@@ -987,7 +990,7 @@ public final class MessagingService implements MessagingServiceMBean
 
     public Map<String, Long> getCommandDroppedTasks()
     {
-        Map<String, Long> droppedTasks = new HashMap<String, Long>();
+        Map<String, Long> droppedTasks = new HashMap<String, Long>(connectionManagers.size());
         for (Map.Entry<InetAddress, OutboundTcpConnectionPool> entry : connectionManagers.entrySet())
             droppedTasks.put(entry.getKey().getHostAddress(), entry.getValue().cmdCon.getDroppedMessages());
         return droppedTasks;
@@ -995,7 +998,7 @@ public final class MessagingService implements MessagingServiceMBean
 
     public Map<String, Integer> getResponsePendingTasks()
     {
-        Map<String, Integer> pendingTasks = new HashMap<String, Integer>();
+        Map<String, Integer> pendingTasks = new HashMap<String, Integer>(connectionManagers.size());
         for (Map.Entry<InetAddress, OutboundTcpConnectionPool> entry : connectionManagers.entrySet())
             pendingTasks.put(entry.getKey().getHostAddress(), entry.getValue().ackCon.getPendingMessages());
         return pendingTasks;
@@ -1003,7 +1006,7 @@ public final class MessagingService implements MessagingServiceMBean
 
     public Map<String, Long> getResponseCompletedTasks()
     {
-        Map<String, Long> completedTasks = new HashMap<String, Long>();
+        Map<String, Long> completedTasks = new HashMap<String, Long>(connectionManagers.size());
         for (Map.Entry<InetAddress, OutboundTcpConnectionPool> entry : connectionManagers.entrySet())
             completedTasks.put(entry.getKey().getHostAddress(), entry.getValue().ackCon.getCompletedMesssages());
         return completedTasks;
@@ -1011,7 +1014,7 @@ public final class MessagingService implements MessagingServiceMBean
 
     public Map<String, Integer> getDroppedMessages()
     {
-        Map<String, Integer> map = new HashMap<String, Integer>();
+        Map<String, Integer> map = new HashMap<String, Integer>(droppedMessages.size());
         for (Map.Entry<Verb, DroppedMessageMetrics> entry : droppedMessages.entrySet())
             map.put(entry.getKey().toString(), (int) entry.getValue().dropped.count());
         return map;
@@ -1019,7 +1022,7 @@ public final class MessagingService implements MessagingServiceMBean
 
     public Map<String, Integer> getRecentlyDroppedMessages()
     {
-        Map<String, Integer> map = new HashMap<String, Integer>();
+        Map<String, Integer> map = new HashMap<String, Integer>(droppedMessages.size());
         for (Map.Entry<Verb, DroppedMessageMetrics> entry : droppedMessages.entrySet())
             map.put(entry.getKey().toString(), entry.getValue().getRecentlyDropped());
         return map;
@@ -1037,7 +1040,7 @@ public final class MessagingService implements MessagingServiceMBean
 
     public Map<String, Long> getTimeoutsPerHost()
     {
-        Map<String, Long> result = new HashMap<String, Long>();
+        Map<String, Long> result = new HashMap<String, Long>(connectionManagers.size());
         for (Map.Entry<InetAddress, OutboundTcpConnectionPool> entry: connectionManagers.entrySet())
         {
             String ip = entry.getKey().getHostAddress();
@@ -1049,7 +1052,7 @@ public final class MessagingService implements MessagingServiceMBean
 
     public Map<String, Long> getRecentTimeoutsPerHost()
     {
-        Map<String, Long> result = new HashMap<String, Long>();
+        Map<String, Long> result = new HashMap<String, Long>(connectionManagers.size());
         for (Map.Entry<InetAddress, OutboundTcpConnectionPool> entry: connectionManagers.entrySet())
         {
             String ip = entry.getKey().getHostAddress();

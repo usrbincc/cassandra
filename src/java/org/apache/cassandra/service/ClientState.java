@@ -20,6 +20,7 @@ package org.apache.cassandra.service;
 import java.net.SocketAddress;
 import java.util.*;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.atomic.AtomicLong;
 
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Sets;
@@ -31,14 +32,14 @@ import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.cql3.QueryHandler;
 import org.apache.cassandra.cql3.QueryProcessor;
-import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.db.SystemKeyspace;
 import org.apache.cassandra.exceptions.AuthenticationException;
 import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.exceptions.UnauthorizedException;
-import org.apache.cassandra.tracing.Tracing;
+import org.apache.cassandra.tracing.TraceKeyspace;
 import org.apache.cassandra.thrift.ThriftValidation;
 import org.apache.cassandra.utils.FBUtilities;
+import org.apache.cassandra.utils.JVMStabilityInspector;
 import org.apache.cassandra.utils.Pair;
 import org.apache.cassandra.utils.SemanticVersion;
 
@@ -57,8 +58,8 @@ public class ClientState
     {
         // We want these system cfs to be always readable to authenticated users since many tools rely on them
         // (nodetool, cqlsh, bulkloader, etc.)
-        for (String cf : Iterables.concat(Arrays.asList(SystemKeyspace.LOCAL_CF, SystemKeyspace.PEERS_CF), SystemKeyspace.allSchemaCfs))
-            READABLE_SYSTEM_RESOURCES.add(DataResource.columnFamily(Keyspace.SYSTEM_KS, cf));
+        for (String cf : Iterables.concat(Arrays.asList(SystemKeyspace.LOCAL_TABLE, SystemKeyspace.PEERS_TABLE), SystemKeyspace.ALL_SCHEMA_TABLES))
+            READABLE_SYSTEM_RESOURCES.add(DataResource.columnFamily(SystemKeyspace.NAME, cf));
 
         PROTECTED_AUTH_RESOURCES.addAll(DatabaseDescriptor.getAuthenticator().protectedResources());
         PROTECTED_AUTH_RESOURCES.addAll(DatabaseDescriptor.getAuthorizer().protectedResources());
@@ -82,6 +83,7 @@ public class ClientState
             }
             catch (Exception e)
             {
+                JVMStabilityInspector.inspectThrowable(e);
                 logger.info("Cannot use class {} as query handler ({}), ignoring by defaulting on normal query handling", customHandlerClass, e.getMessage());
             }
         }
@@ -94,6 +96,9 @@ public class ClientState
 
     // The remote address of the client - null for internal clients.
     private final SocketAddress remoteAddress;
+
+    // The biggest timestamp that was returned by getTimestamp/assigned to a query
+    private final AtomicLong lastTimestampMicros = new AtomicLong(0);
 
     /**
      * Construct a new, empty ClientState for internal calls.
@@ -126,6 +131,38 @@ public class ClientState
     public static ClientState forExternalCalls(SocketAddress remoteAddress)
     {
         return new ClientState(remoteAddress);
+    }
+
+    /**
+     * This clock guarantees that updates for the same ClientState will be ordered
+     * in the sequence seen, even if multiple updates happen in the same millisecond.
+     */
+    public long getTimestamp()
+    {
+        while (true)
+        {
+            long current = System.currentTimeMillis() * 1000;
+            long last = lastTimestampMicros.get();
+            long tstamp = last >= current ? last + 1 : current;
+            if (lastTimestampMicros.compareAndSet(last, tstamp))
+                return tstamp;
+        }
+    }
+
+    /**
+     * Can be use when a timestamp has been assigned by a query, but that timestamp is
+     * not directly one returned by getTimestamp() (see SP.beginAndRepairPaxos()).
+     * This ensure following calls to getTimestamp() will return a timestamp strictly
+     * greated than the one provided to this method.
+     */
+    public void updateLastTimestamp(long tstampMicros)
+    {
+        while (true)
+        {
+            long last = lastTimestampMicros.get();
+            if (tstampMicros <= last || lastTimestampMicros.compareAndSet(last, tstampMicros))
+                return;
+        }
     }
 
     public static QueryHandler getCQLQueryHandler()
@@ -225,11 +262,11 @@ public class ClientState
             return;
 
         // prevent system keyspace modification
-        if (Keyspace.SYSTEM_KS.equalsIgnoreCase(keyspace))
+        if (SystemKeyspace.NAME.equalsIgnoreCase(keyspace))
             throw new UnauthorizedException(keyspace + " keyspace is not user-modifiable.");
 
         // we want to allow altering AUTH_KS and TRACING_KS.
-        Set<String> allowAlter = Sets.newHashSet(Auth.AUTH_KS, Tracing.TRACE_KS);
+        Set<String> allowAlter = Sets.newHashSet(Auth.AUTH_KS, TraceKeyspace.NAME);
         if (allowAlter.contains(keyspace.toLowerCase()) && !(resource.isKeyspaceLevel() && perm.equals(Permission.ALTER)))
             throw new UnauthorizedException(String.format("Cannot %s %s", perm, resource));
     }

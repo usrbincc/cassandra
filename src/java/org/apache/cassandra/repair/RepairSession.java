@@ -76,7 +76,7 @@ import org.apache.cassandra.utils.Pair;
  * Similarly, if a job is sequential, it will handle one SyncTask at a time, but will handle
  * all of them in parallel otherwise.
  */
-public class RepairSession extends AbstractFuture<List<RepairResult>> implements IEndpointStateChangeSubscriber,
+public class RepairSession extends AbstractFuture<RepairSessionResult> implements IEndpointStateChangeSubscriber,
                                                                                  IFailureDetectionEventListener
 {
     private static Logger logger = LoggerFactory.getLogger(RepairSession.class);
@@ -107,10 +107,13 @@ public class RepairSession extends AbstractFuture<List<RepairResult>> implements
     /**
      * Create new repair session.
      *
+     * @param parentRepairSession the parent sessions id
+     * @param id this sessions id
      * @param range range to repair
      * @param keyspace name of keyspace
      * @param isSequential true if performing repair on snapshots sequentially
      * @param endpoints the data centers that should be part of the repair; null for all DCs
+     * @param repairedAt when the repair occurred (millis)
      * @param cfnames names of columnfamilies
      */
     public RepairSession(UUID parentRepairSession,
@@ -224,9 +227,14 @@ public class RepairSession extends AbstractFuture<List<RepairResult>> implements
 
         if (endpoints.isEmpty())
         {
+<<<<<<< HEAD
             logger.info("[repair #{}] {}", getId(), message = String.format("No neighbors to repair with on range %s: session completed", range));
             Tracing.traceRepair(message);
             set(Lists.<RepairResult>newArrayList());
+=======
+            logger.info(String.format("[repair #%s] No neighbors to repair with on range %s: session completed", getId(), range));
+            set(new RepairSessionResult(id, keyspace, range, Lists.<RepairResult>newArrayList()));
+>>>>>>> trunk
             return;
         }
 
@@ -257,9 +265,14 @@ public class RepairSession extends AbstractFuture<List<RepairResult>> implements
             public void onSuccess(List<RepairResult> results)
             {
                 // this repair session is completed
+<<<<<<< HEAD
                 logger.info("[repair #{}] {}", getId(), "Session completed successfully");
                 Tracing.traceRepair("Completed sync of range {}", range);
                 set(results);
+=======
+                logger.info(String.format("[repair #%s] session completed successfully", getId()));
+                set(new RepairSessionResult(id, keyspace, range, results));
+>>>>>>> trunk
                 taskExecutor.shutdown();
                 // mark this session as terminated
                 terminate();

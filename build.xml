@@ -212,6 +212,8 @@
          <arg value="${build.src.java}/org/apache/cassandra/cql3/Cql.g" />
          <arg value="-fo" />
          <arg value="${build.src.gen-java}/org/apache/cassandra/cql3/" />
+         <arg value="-Xmaxinlinedfastates"/>
+         <arg value="10"/> <!-- default is 60 -->
       </java>
     </target>
 
@@ -327,15 +329,16 @@
           <dependency groupId="org.antlr" artifactId="antlr-runtime" version="3.5.2"/>
           <dependency groupId="org.antlr" artifactId="stringtemplate" version="4.0.2"/>
           <dependency groupId="org.slf4j" artifactId="slf4j-api" version="1.7.2"/>
+          <dependency groupId="org.slf4j" artifactId="log4j-over-slf4j" version="1.7.2"/>
           <dependency groupId="ch.qos.logback" artifactId="logback-core" version="1.1.2"/>
           <dependency groupId="ch.qos.logback" artifactId="logback-classic" version="1.1.2"/>
           <dependency groupId="org.codehaus.jackson" artifactId="jackson-core-asl" version="1.9.2"/>
           <dependency groupId="org.codehaus.jackson" artifactId="jackson-mapper-asl" version="1.9.2"/>
           <dependency groupId="com.googlecode.json-simple" artifactId="json-simple" version="1.1"/>
           <dependency groupId="com.boundary" artifactId="high-scale-lib" version="1.0.6"/>
-          <dependency groupId="com.github.jbellis" artifactId="jamm" version="0.2.6"/>
+          <dependency groupId="com.github.jbellis" artifactId="jamm" version="0.2.8"/>
           <dependency groupId="com.thinkaurelius.thrift" artifactId="thrift-server" version="0.3.7">
-	      	<exclusion groupId="org.slf4j" artifactId="slf4j-log4j12"/>
+            <exclusion groupId="org.slf4j" artifactId="slf4j-log4j12"/>
           </dependency>
           <dependency groupId="org.yaml" artifactId="snakeyaml" version="1.11"/>
           <dependency groupId="org.apache.thrift" artifactId="libthrift" version="0.9.1"/>
@@ -374,7 +377,9 @@
           <dependency groupId="org.javassist" artifactId="javassist" version="3.18.2-GA" />
           <dependency groupId="net.sf.supercsv" artifactId="super-csv" version="2.1.0" />
 	      <dependency groupId="net.ju-n.compile-command-annotations" artifactId="compile-command-annotations" version="1.2.0" />
-          <dependency groupId="org.fusesource" artifactId="sigar" version="1.6.4" />
+          <dependency groupId="org.fusesource" artifactId="sigar" version="1.6.4">
+          	<exclusion groupId="log4j" artifactId="log4j"/>
+          </dependency>
         </dependencyManagement>
         <developer id="alakshman" name="Avinash Lakshman"/>
         <developer id="aleksey" name="Aleksey Yeschenko"/>
@@ -418,10 +423,11 @@
       	<dependency groupId="com.google.code.findbugs" artifactId="jsr305"/>
         <dependency groupId="org.antlr" artifactId="antlr"/>
         <dependency groupId="com.datastax.cassandra" artifactId="cassandra-driver-core"/>
-        <dependency groupId="net.ju-n.compile-command-annotations" artifactId="compile-command-annotations"/>
         <dependency groupId="org.javassist" artifactId="javassist"/>
         <dependency groupId="org.openjdk.jmh" artifactId="jmh-core"/>
         <dependency groupId="org.openjdk.jmh" artifactId="jmh-generator-annprocess"/>
+	    <dependency groupId="net.ju-n.compile-command-annotations" artifactId="compile-command-annotations"/>
+        <dependency groupId="org.javassist" artifactId="javassist" />
       </artifact:pom>
 
       <artifact:pom id="coverage-deps-pom"
@@ -467,6 +473,7 @@
         <dependency groupId="org.antlr" artifactId="antlr-runtime"/>
         <dependency groupId="org.antlr" artifactId="stringtemplate" version="4.0.2"/>
         <dependency groupId="org.slf4j" artifactId="slf4j-api"/>
+        <dependency groupId="org.slf4j" artifactId="log4j-over-slf4j"/>
         <dependency groupId="org.codehaus.jackson" artifactId="jackson-core-asl"/>
         <dependency groupId="org.codehaus.jackson" artifactId="jackson-mapper-asl"/>
         <dependency groupId="com.googlecode.json-simple" artifactId="json-simple"/>
@@ -475,10 +482,9 @@
         <dependency groupId="org.mindrot" artifactId="jbcrypt"/>
         <dependency groupId="com.yammer.metrics" artifactId="metrics-core"/>
         <dependency groupId="com.addthis.metrics" artifactId="reporter-config"/>
-        <dependency groupId="com.thinkaurelius.thrift" artifactId="thrift-server" version="0.3.7"/>
+        <dependency groupId="com.thinkaurelius.thrift" artifactId="thrift-server" version="0.3.5"/>
         <dependency groupId="com.clearspring.analytics" artifactId="stream" version="2.5.2" />
         <dependency groupId="net.sf.supercsv" artifactId="super-csv" version="2.1.0" />
-        <dependency groupId="org.javassist" artifactId="javassist"/>
 
         <dependency groupId="ch.qos.logback" artifactId="logback-core"/>
         <dependency groupId="ch.qos.logback" artifactId="logback-classic"/>
@@ -491,6 +497,7 @@
         <dependency groupId="org.apache.hadoop" artifactId="hadoop-minicluster" optional="true"/>
         <dependency groupId="org.apache.pig" artifactId="pig" optional="true"/>
       	<dependency groupId="com.datastax.cassandra" artifactId="cassandra-driver-core" optional="true"/>
+
 
         <!-- don't need jna to run, but nice to have -->
         <dependency groupId="net.java.dev.jna" artifactId="jna" version="4.0.0"/>
@@ -511,6 +518,7 @@
         <scm connection="${scm.connection}" developerConnection="${scm.developerConnection}" url="${scm.url}"/>
         <dependency groupId="org.apache.commons" artifactId="commons-lang3"/>
         <dependency groupId="org.slf4j" artifactId="slf4j-api"/>
+        <dependency groupId="org.slf4j" artifactId="log4j-over-slf4j"/>
         <dependency groupId="org.apache.thrift" artifactId="libthrift"/>
       </artifact:pom>
       <artifact:pom id="clientutil-pom"
@@ -678,7 +686,7 @@
           <pathelement location="${test.conf}"/>
         </classpath>
         <jvmarg value="-Dstorage-config=${test.conf}"/>
-        <jvmarg value="-javaagent:${basedir}/lib/jamm-0.2.6.jar" />
+        <jvmarg value="-javaagent:${basedir}/lib/jamm-0.2.8.jar" />
         <jvmarg value="-ea"/>
       </java>
     </target>
@@ -1105,12 +1113,13 @@
         <formatter type="brief" usefile="false"/>
         <jvmarg value="-Dstorage-config=${test.conf}"/>
         <jvmarg value="-Djava.awt.headless=true"/>
-        <jvmarg line="-javaagent:${basedir}/lib/jamm-0.2.6.jar ${additionalagent}" />
+        <jvmarg line="-javaagent:${basedir}/lib/jamm-0.2.8.jar ${additionalagent}" />
         <jvmarg value="-ea"/>
         <jvmarg value="-Xss256k"/>
         <jvmarg value="-Dcassandra.memtable_row_overhead_computation_step=100"/>
         <jvmarg value="-Dcassandra.test.use_prepared=${cassandra.test.use_prepared}"/>
-	<jvmarg value="-Dcassandra.test.offsetseed=@{poffset}"/>        
+	    <jvmarg value="-Dcassandra.test.offsetseed=@{poffset}"/>
+        <jvmarg value="-Dcassandra.test.sstableformatdevelopment=true"/>
 	<optjvmargs/>
         <classpath>
           <path refid="cassandra.classpath" />
@@ -1126,6 +1135,12 @@
             <filelist dir="@{inputdir}" files="@{filelist}"/>
         </batchtest>
       </junit>
+      <junitreport todir="${build.test.dir}">
+        <fileset dir="${build.test.dir}/output">
+          <include name="TEST-*.xml"/>
+        </fileset>
+        <report format="frames" todir="${build.test.dir}/junitreport"/>
+      </junitreport>
       <fail message="Some @{suitename} test(s) failed.">
         <condition>
             <and>
@@ -1155,6 +1170,7 @@
         <pathelement location="${build.dir}/${ant.project.name}-thrift-${version}.jar" />
         <pathelement location="${build.lib}/libthrift-0.9.0.jar" />
         <pathelement location="${build.lib}/slf4j-api-1.7.2.jar" />
+        <pathelement location="${build.lib}/log4j-over-slf4j.jar" />
         <pathelement location="${build.lib}/logback-core-1.1.2.jar" />
         <pathelement location="${build.lib}/logback-classic-1.1.2.jar" />
         <pathelement location="${build.lib}/jackson-core-asl-1.9.2.jar" />
@@ -1270,7 +1286,7 @@
         <formatter type="brief" usefile="false"/>
         <jvmarg value="-Dstorage-config=${test.conf}"/>
         <jvmarg value="-Djava.awt.headless=true"/>
-        <jvmarg value="-javaagent:${basedir}/lib/jamm-0.2.6.jar" />
+        <jvmarg value="-javaagent:${basedir}/lib/jamm-0.2.8.jar" />
         <jvmarg value="-ea"/>
         <jvmarg value="-Xss256k"/>
         <jvmarg value="-Dcassandra.memtable_row_overhead_computation_step=100"/>
@@ -1313,7 +1329,7 @@
         <formatter type="brief" usefile="false"/>
         <jvmarg value="-Dstorage-config=${test.conf}"/>
         <jvmarg value="-Djava.awt.headless=true"/>
-        <jvmarg value="-javaagent:${basedir}/lib/jamm-0.2.6.jar" />
+        <jvmarg value="-javaagent:${basedir}/lib/jamm-0.2.8.jar" />
         <jvmarg value="-ea"/>
         <jvmarg value="-Xss256k"/>
         <jvmarg value="-Dcassandra.test.use_prepared=${cassandra.test.use_prepared}"/>
@@ -1537,7 +1553,7 @@
   </target>
 
   <!-- Generate Eclipse project description files -->
-  <target name="generate-eclipse-files" depends="build" description="Generate eclipse files">
+  <target name="generate-eclipse-files" depends="build-test" description="Generate eclipse files">
     <echo file=".project"><![CDATA[<?xml version="1.0" encoding="UTF-8"?>
 <projectDescription>
   <name>${eclipse.project.name}</name>
@@ -1559,15 +1575,14 @@
   <classpathentry kind="src" path="src/java"/>
   <classpathentry kind="src" path="src/resources"/>
   <classpathentry kind="src" path="src/gen-java"/>
-  <classpathentry kind="src" path="interface/thrift/gen-java"/>
-  <classpathentry kind="src" path="test/unit"/>
-  <classpathentry kind="src" path="test/long"/>
-  <classpathentry kind="src" path="test/pig"/>
+  <classpathentry kind="src" output="build/test/classes" path="test/unit"/>
+  <classpathentry kind="src" output="build/test/classes" path="test/long"/>
+  <classpathentry kind="src" output="build/test/classes" path="test/pig"/>
+  <classpathentry kind="src" output="build/test/classes" path="test/resources" />
   <classpathentry kind="src" path="tools/stress/src"/>
   <classpathentry kind="con" path="org.eclipse.jdt.launching.JRE_CONTAINER"/>
   <classpathentry kind="output" path="build/classes/main"/>
-  <classpathentry kind="lib" path="build/classes/thrift"/>
-  <classpathentry kind="lib" path="build/test/classes"/>
+  <classpathentry kind="lib" path="build/classes/thrift" sourcepath="interface/thrift/gen-java/"/>
   <classpathentry kind="lib" path="test/conf"/>
 ]]>
 	</echo>	  
@@ -1583,13 +1598,22 @@
   	 </fileset>
   	</path>
   	<property name="eclipse-project-libs" refid="eclipse-project-libs-path"/>
-  	<script language="javascript"> <![CDATA[
+  	<script language="javascript" classpathref="cassandra.classpath"> <![CDATA[
   		var File = java.io.File;
+  		var FilenameUtils = Packages.org.apache.commons.io.FilenameUtils;
   		jars = project.getProperty("eclipse-project-libs").split(project.getProperty("path.separator"));
   		
   		cp = "";
   	    for (i=0; i< jars.length; i++) {
-  	       cp += ' <classpathentry kind="lib" path="'+jars[i]+'"/>\n';
+  	       srcjar = FilenameUtils.getBaseName(jars[i]) + '-sources.jar';
+  		   srcdir = FilenameUtils.concat(project.getProperty("build.dir.lib"), 'sources');
+  		   srcfile = new File(FilenameUtils.concat(srcdir, srcjar));
+  		
+  		   cp += ' <classpathentry kind="lib" path="' + jars[i] + '"';
+  		   if (srcfile.exists()) {
+  		      cp += ' sourcepath="' + srcfile.getAbsolutePath() + '"';
+  		   }
+  		   cp += '/>\n';
   		}
   		
   		cp += '</classpath>';

@@ -28,6 +28,7 @@ import com.google.common.collect.ImmutableSortedSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Sets;
 import com.google.common.primitives.Ints;
+import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -61,18 +62,14 @@ public class LeveledManifest
     private final ColumnFamilyStore cfs;
     @VisibleForTesting
     protected final List<SSTableReader>[] generations;
-    @VisibleForTesting
-    protected final List<SSTableReader> unrepairedL0;
     private final RowPosition[] lastCompactedKeys;
     private final int maxSSTableSizeInBytes;
     private final SizeTieredCompactionStrategyOptions options;
-    private boolean hasRepairedData = false;
     private final int [] compactionCounter;
 
-    private LeveledManifest(ColumnFamilyStore cfs, int maxSSTableSizeInMB, SizeTieredCompactionStrategyOptions options)
+    LeveledManifest(ColumnFamilyStore cfs, int maxSSTableSizeInMB, SizeTieredCompactionStrategyOptions options)
     {
         this.cfs = cfs;
-        this.hasRepairedData = cfs.getRepairedSSTables().size() > 0;
         this.maxSSTableSizeInBytes = maxSSTableSizeInMB * 1024 * 1024;
         this.options = options;
 
@@ -87,7 +84,6 @@ public class LeveledManifest
             generations[i] = new ArrayList<>();
             lastCompactedKeys[i] = cfs.partitioner.getMinimumToken().minKeyBound();
         }
-        unrepairedL0 = new ArrayList<>();
         compactionCounter = new int[n];
     }
 
@@ -114,73 +110,39 @@ public class LeveledManifest
 
     public synchronized void add(SSTableReader reader)
     {
-        if (!hasRepairedData && reader.isRepaired())
-        {
-            // this is the first repaired sstable we get - we need to
-            // rebuild the entire manifest, unrepaired data should be
-            // in unrepairedL0. Note that we keep the sstable level in
-            // the sstable metadata since we are likely to be able to
-            // re-add it at a good level later (during anticompaction
-            // for example).
-            hasRepairedData = true;
-            rebuildManifestAfterFirstRepair();
-        }
-
         int level = reader.getSSTableLevel();
-        if (hasRepairedData && !reader.isRepaired())
+
+        assert level < generations.length : "Invalid level " + level + " out of " + (generations.length - 1);
+        logDistribution();
+        if (canAddSSTable(reader))
         {
-            logger.debug("Adding unrepaired {} to unrepaired L0", reader);
-            unrepairedL0.add(reader);
+            // adding the sstable does not cause overlap in the level
+            logger.debug("Adding {} to L{}", reader, level);
+            generations[level].add(reader);
         }
         else
         {
-            assert level < generations.length : "Invalid level " + level + " out of " + (generations.length - 1);
-            logDistribution();
-            if (canAddSSTable(reader))
+            // this can happen if:
+            // * a compaction has promoted an overlapping sstable to the given level, or
+            //   was also supposed to add an sstable at the given level.
+            // * we are moving sstables from unrepaired to repaired and the sstable
+            //   would cause overlap
+            //
+            // The add(..):ed sstable will be sent to level 0
+            try
             {
-                // adding the sstable does not cause overlap in the level
-                logger.debug("Adding {} to L{}", reader, level);
-                generations[level].add(reader);
+                reader.descriptor.getMetadataSerializer().mutateLevel(reader.descriptor, 0);
+                reader.reloadSSTableMetadata();
             }
-            else
+            catch (IOException e)
             {
-                // this can happen if:
-                // * a compaction has promoted an overlapping sstable to the given level, or
-                // * we promote a non-repaired sstable to repaired at level > 0, but an ongoing compaction
-                //   was also supposed to add an sstable at the given level.
-                //
-                // The add(..):ed sstable will be sent to level 0
-                try
-                {
-                    reader.descriptor.getMetadataSerializer().mutateLevel(reader.descriptor, 0);
-                    reader.reloadSSTableMetadata();
-                }
-                catch (IOException e)
-                {
-                    logger.error("Could not change sstable level - adding it at level 0 anyway, we will find it at restart.", e);
-                }
-                generations[0].add(reader);
+                logger.error("Could not change sstable level - adding it at level 0 anyway, we will find it at restart.", e);
             }
-        }
-
-    }
-
-
-    /**
-     * Since we run standard LCS when we have no repaired data
-     * we need to move all sstables from the leveling
-     * to unrepairedL0.
-     */
-    private void rebuildManifestAfterFirstRepair()
-    {
-        for (int i = 0; i < getAllLevelSize().length; i++)
-        {
-            List<SSTableReader> oldLevel = generations[i];
-            generations[i] = new ArrayList<>();
-            for (SSTableReader sstable : oldLevel)
-                add(sstable);
+            generations[0].add(reader);
         }
     }
+
+
 
     public synchronized void replace(Collection<SSTableReader> removed, Collection<SSTableReader> added)
     {
@@ -215,7 +177,7 @@ public class LeveledManifest
     {
         SSTableReader previous = null;
         Collections.sort(generations[level], SSTableReader.sstableComparator);
-        List<SSTableReader> outOfOrderSSTables = new ArrayList<SSTableReader>();
+        List<SSTableReader> outOfOrderSSTables = new ArrayList<>();
         for (SSTableReader current : generations[level])
         {
             if (previous != null && current.first.compareTo(previous.last) <= 0)
@@ -278,15 +240,6 @@ public class LeveledManifest
         }
     }
 
-    public synchronized void repairStatusChanged(Collection<SSTableReader> sstables)
-    {
-        for(SSTableReader sstable : sstables)
-        {
-            remove(sstable);
-            add(sstable);
-        }
-    }
-
     private String toString(Collection<SSTableReader> sstables)
     {
         StringBuilder builder = new StringBuilder();
@@ -319,19 +272,6 @@ public class LeveledManifest
      */
     public synchronized CompactionCandidate getCompactionCandidates()
     {
-        // if we don't have any repaired data, continue as usual
-        if (hasRepairedData)
-        {
-            Collection<SSTableReader> unrepairedMostInterresting = getSSTablesForSTCS(unrepairedL0);
-            if (!unrepairedMostInterresting.isEmpty())
-            {
-                logger.info("Unrepaired data is most interresting, compacting {} sstables with STCS", unrepairedMostInterresting.size());
-                for (SSTableReader reader : unrepairedMostInterresting)
-                    assert !reader.isRepaired();
-                return new CompactionCandidate(unrepairedMostInterresting, 0, Long.MAX_VALUE);
-            }
-        }
-
         // during bootstrap we only do size tiering in L0 to make sure
         // the streamed files can be placed in their original levels
         if (StorageService.instance.isBootstrapMode())
@@ -531,7 +471,6 @@ public class LeveledManifest
         int level = reader.getSSTableLevel();
         assert level >= 0 : reader + " not present in manifest: "+level;
         generations[level].remove(reader);
-        unrepairedL0.remove(reader);
         return level;
     }
 
@@ -574,7 +513,7 @@ public class LeveledManifest
     private static Set<SSTableReader> overlapping(Token start, Token end, Iterable<SSTableReader> sstables)
     {
         assert start.compareTo(end) <= 0;
-        Set<SSTableReader> overlapped = new HashSet<SSTableReader>();
+        Set<SSTableReader> overlapped = new HashSet<>();
         Bounds<Token> promotedBounds = new Bounds<Token>(start, end);
         for (SSTableReader candidate : sstables)
         {
@@ -609,6 +548,16 @@ public class LeveledManifest
         {
             Set<SSTableReader> compactingL0 = ImmutableSet.copyOf(Iterables.filter(getLevel(0), Predicates.in(compacting)));
 
+            RowPosition lastCompactingKey = null;
+            RowPosition firstCompactingKey = null;
+            for (SSTableReader candidate : compactingL0)
+            {
+                if (firstCompactingKey == null || candidate.first.compareTo(firstCompactingKey) < 0)
+                    firstCompactingKey = candidate.first;
+                if (lastCompactingKey == null || candidate.last.compareTo(lastCompactingKey) > 0)
+                    lastCompactingKey = candidate.last;
+            }
+
             // L0 is the dumping ground for new sstables which thus may overlap each other.
             //
             // We treat L0 compactions specially:
@@ -622,8 +571,8 @@ public class LeveledManifest
             // Note that we ignore suspect-ness of L1 sstables here, since if an L1 sstable is suspect we're
             // basically screwed, since we expect all or most L0 sstables to overlap with each L1 sstable.
             // So if an L1 sstable is suspect we can't do much besides try anyway and hope for the best.
-            Set<SSTableReader> candidates = new HashSet<SSTableReader>();
-            Set<SSTableReader> remaining = new HashSet<SSTableReader>();
+            Set<SSTableReader> candidates = new HashSet<>();
+            Set<SSTableReader> remaining = new HashSet<>();
             Iterables.addAll(remaining, Iterables.filter(getLevel(0), Predicates.not(suspectP)));
             for (SSTableReader sstable : ageSortedSSTables(remaining))
             {
@@ -636,9 +585,7 @@ public class LeveledManifest
 
                 for (SSTableReader newCandidate : overlappedL0)
                 {
-                    // overlappedL0 could contain sstables that are not in compactingL0, but do overlap
-                    // other sstables that are
-                    if (overlapping(newCandidate, compactingL0).isEmpty())
+                    if (firstCompactingKey == null || lastCompactingKey == null || overlapping(firstCompactingKey.getToken(), lastCompactingKey.getToken(), Arrays.asList(newCandidate)).size() == 0)
                         candidates.add(newCandidate);
                     remaining.remove(newCandidate);
                 }
@@ -699,7 +646,7 @@ public class LeveledManifest
 
     private List<SSTableReader> ageSortedSSTables(Collection<SSTableReader> candidates)
     {
-        List<SSTableReader> ageSortedCandidates = new ArrayList<SSTableReader>(candidates);
+        List<SSTableReader> ageSortedCandidates = new ArrayList<>(candidates);
         Collections.sort(ageSortedCandidates, SSTableReader.maxTimestampComparator);
         return ageSortedCandidates;
     }
@@ -769,11 +716,6 @@ public class LeveledManifest
         }
         return newLevel;
 
-    }
-
-    public boolean hasRepairedData()
-    {
-        return hasRepairedData;
     }
 
     public static class CompactionCandidate
