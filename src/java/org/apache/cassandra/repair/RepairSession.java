@@ -227,14 +227,9 @@ public class RepairSession extends AbstractFuture<RepairSessionResult> implement
 
         if (endpoints.isEmpty())
         {
-<<<<<<< HEAD
             logger.info("[repair #{}] {}", getId(), message = String.format("No neighbors to repair with on range %s: session completed", range));
             Tracing.traceRepair(message);
-            set(Lists.<RepairResult>newArrayList());
-=======
-            logger.info(String.format("[repair #%s] No neighbors to repair with on range %s: session completed", getId(), range));
             set(new RepairSessionResult(id, keyspace, range, Lists.<RepairResult>newArrayList()));
->>>>>>> trunk
             return;
         }
 
@@ -265,14 +260,9 @@ public class RepairSession extends AbstractFuture<RepairSessionResult> implement
             public void onSuccess(List<RepairResult> results)
             {
                 // this repair session is completed
-<<<<<<< HEAD
                 logger.info("[repair #{}] {}", getId(), "Session completed successfully");
                 Tracing.traceRepair("Completed sync of range {}", range);
-                set(results);
-=======
-                logger.info(String.format("[repair #%s] session completed successfully", getId()));
                 set(new RepairSessionResult(id, keyspace, range, results));
->>>>>>> trunk
                 taskExecutor.shutdown();
                 // mark this session as terminated
                 terminate();

@@ -28,14 +28,7 @@ import org.slf4j.helpers.MessageFormatter;
 
 import org.apache.cassandra.concurrent.Stage;
 import org.apache.cassandra.concurrent.StageManager;
-<<<<<<< HEAD
-import org.apache.cassandra.config.CFMetaData;
-import org.apache.cassandra.db.ArrayBackedSortedColumns;
-import org.apache.cassandra.db.ColumnFamily;
-import org.apache.cassandra.db.Mutation;
 import org.apache.cassandra.service.StorageService;
-=======
->>>>>>> trunk
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.WrappedRunnable;
 
@@ -168,11 +161,7 @@ public class TraceState
         TraceState.trace(sessionIdBytes, message, elapsed(), ttl, notificationHandle);
     }
 
-<<<<<<< HEAD
-    public static void trace(final ByteBuffer sessionIdBytes, final String message, final int elapsed, final int ttl, final Object notificationHandle)
-=======
-    public static void trace(final ByteBuffer sessionId, final String message, final int elapsed)
->>>>>>> trunk
+    public static void trace(final ByteBuffer sessionId, final String message, final int elapsed, final int ttl, final Object notificationHandle)
     {
         final String threadName = Thread.currentThread().getName();
 
@@ -183,18 +172,7 @@ public class TraceState
         {
             public void runMayThrow()
             {
-<<<<<<< HEAD
-                CFMetaData cfMeta = CFMetaData.TraceEventsCf;
-                ColumnFamily cf = ArrayBackedSortedColumns.factory.create(cfMeta);
-                Tracing.addColumn(cf, Tracing.buildName(cfMeta, eventId, ByteBufferUtil.bytes("activity")), message, ttl);
-                Tracing.addColumn(cf, Tracing.buildName(cfMeta, eventId, ByteBufferUtil.bytes("source")), FBUtilities.getBroadcastAddress(), ttl);
-                if (elapsed >= 0)
-                    Tracing.addColumn(cf, Tracing.buildName(cfMeta, eventId, ByteBufferUtil.bytes("source_elapsed")), elapsed, ttl);
-                Tracing.addColumn(cf, Tracing.buildName(cfMeta, eventId, ByteBufferUtil.bytes("thread")), threadName, ttl);
-                Tracing.mutateWithCatch(new Mutation(Tracing.TRACE_KS, sessionIdBytes, cf));
-=======
-                Tracing.mutateWithCatch(TraceKeyspace.toEventMutation(sessionId, message, elapsed, threadName));
->>>>>>> trunk
+                Tracing.mutateWithCatch(TraceKeyspace.toEventMutation(sessionId, message, elapsed, threadName, ttl));
             }
         });
     }

@@ -32,11 +32,7 @@ import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.concurrent.Stage;
 import org.apache.cassandra.concurrent.StageManager;
-<<<<<<< HEAD
-import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.DatabaseDescriptor;
-=======
->>>>>>> trunk
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.marshal.TimeUUIDType;
 import org.apache.cassandra.exceptions.OverloadedException;
@@ -58,7 +54,6 @@ public class Tracing
     public static final String TRACE_TYPE = "TraceType";
     public static final String TRACE_TTL = "TraceTTL";
 
-<<<<<<< HEAD
     public enum TraceType
     {
         NONE,
@@ -89,8 +84,6 @@ public class Tracing
         }
     }
 
-=======
->>>>>>> trunk
     private static final Logger logger = LoggerFactory.getLogger(Tracing.class);
 
     private final InetAddress localAddress = FBUtilities.getLocalAddress();
@@ -101,48 +94,6 @@ public class Tracing
 
     public static final Tracing instance = new Tracing();
 
-<<<<<<< HEAD
-    public static void addColumn(ColumnFamily cf, CellName name, InetAddress address, int ttl)
-    {
-        addColumn(cf, name, ByteBufferUtil.bytes(address), ttl);
-    }
-
-    public static void addColumn(ColumnFamily cf, CellName name, int value, int ttl)
-    {
-        addColumn(cf, name, ByteBufferUtil.bytes(value), ttl);
-    }
-
-    public static void addColumn(ColumnFamily cf, CellName name, long value, int ttl)
-    {
-        addColumn(cf, name, ByteBufferUtil.bytes(value), ttl);
-    }
-
-    public static void addColumn(ColumnFamily cf, CellName name, String value, int ttl)
-    {
-        addColumn(cf, name, ByteBufferUtil.bytes(value), ttl);
-    }
-
-    private static void addColumn(ColumnFamily cf, CellName name, ByteBuffer value, int ttl)
-    {
-        cf.addColumn(new BufferExpiringCell(name, value, System.currentTimeMillis(), ttl));
-    }
-
-    public void addParameterColumns(ColumnFamily cf, Map<String, String> rawPayload, int ttl)
-    {
-        for (Map.Entry<String, String> entry : rawPayload.entrySet())
-        {
-            cf.addColumn(new BufferExpiringCell(buildName(CFMetaData.TraceSessionsCf, "parameters", entry.getKey()),
-                                                bytes(entry.getValue()), System.currentTimeMillis(), ttl));
-        }
-    }
-
-    public static CellName buildName(CFMetaData meta, Object... args)
-    {
-        return meta.comparator.makeCellName(args);
-    }
-
-=======
->>>>>>> trunk
     public UUID getSessionId()
     {
         assert isTracing();
@@ -214,25 +165,14 @@ public class Tracing
         else
         {
             final int elapsed = state.elapsed();
-<<<<<<< HEAD
-            final ByteBuffer sessionIdBytes = state.sessionIdBytes;
-            final int ttl = state.ttl;
-=======
             final ByteBuffer sessionId = state.sessionIdBytes;
->>>>>>> trunk
+            final int ttl = state.ttl;
 
             StageManager.getStage(Stage.TRACING).execute(new Runnable()
             {
                 public void run()
                 {
-<<<<<<< HEAD
-                    CFMetaData cfMeta = CFMetaData.TraceSessionsCf;
-                    ColumnFamily cf = ArrayBackedSortedColumns.factory.create(cfMeta);
-                    addColumn(cf, buildName(cfMeta, "duration"), elapsed, ttl);
-                    mutateWithCatch(new Mutation(TRACE_KS, sessionIdBytes, cf));
-=======
-                    mutateWithCatch(TraceKeyspace.toStopSessionMutation(sessionId, elapsed));
->>>>>>> trunk
+                    mutateWithCatch(TraceKeyspace.toStopSessionMutation(sessionId, elapsed, ttl));
                 }
             });
 
@@ -261,34 +201,17 @@ public class Tracing
     {
         assert isTracing();
 
-<<<<<<< HEAD
         final TraceState state = this.state.get();
-        final long started_at = System.currentTimeMillis();
-        final ByteBuffer sessionIdBytes = state.sessionIdBytes;
+        final long startedAt = System.currentTimeMillis();
+        final ByteBuffer sessionId = state.sessionIdBytes;
         final String command = state.traceType.toString();
         final int ttl = state.ttl;
-=======
-        final long startedAt = System.currentTimeMillis();
-        final ByteBuffer sessionId = state.get().sessionIdBytes;
->>>>>>> trunk
 
         StageManager.getStage(Stage.TRACING).execute(new Runnable()
         {
             public void run()
             {
-<<<<<<< HEAD
-                CFMetaData cfMeta = CFMetaData.TraceSessionsCf;
-                ColumnFamily cf = ArrayBackedSortedColumns.factory.create(cfMeta);
-                addColumn(cf, buildName(cfMeta, "coordinator"), FBUtilities.getBroadcastAddress(), ttl);
-                addParameterColumns(cf, parameters, ttl);
-                addColumn(cf, buildName(cfMeta, bytes("request")), request, ttl);
-                addColumn(cf, buildName(cfMeta, bytes("started_at")), started_at, ttl);
-                addColumn(cf, buildName(cfMeta, bytes("command")), command, ttl);
-                addParameterColumns(cf, parameters, ttl);
-                mutateWithCatch(new Mutation(TRACE_KS, sessionIdBytes, cf));
-=======
-                mutateWithCatch(TraceKeyspace.toStartSessionMutation(sessionId, parameters, request, startedAt));
->>>>>>> trunk
+                mutateWithCatch(TraceKeyspace.toStartSessionMutation(sessionId, parameters, request, startedAt, command, ttl));
             }
         });
 
