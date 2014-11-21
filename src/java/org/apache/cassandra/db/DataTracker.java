@@ -312,7 +312,7 @@ public class DataTracker
     public void replaceEarlyOpenedFiles(Collection<SSTableReader> toReplace, Collection<SSTableReader> replaceWith)
     {
         for (SSTableReader s : toReplace)
-            assert s.openReason.equals(SSTableReader.OpenReason.EARLY);
+            assert s.openReason == SSTableReader.OpenReason.EARLY;
         // note that we can replace an early opened file with a real one
         replaceReaders(toReplace, replaceWith, false);
     }
@@ -757,7 +757,7 @@ public class DataTracker
 
         public List<SSTableReader> sstablesInBounds(AbstractBounds<RowPosition> rowBounds)
         {
-            RowPosition stopInTree = rowBounds.right.isMinimum(liveMemtables.get(0).cfs.partitioner) ? intervalTree.max() : rowBounds.right;
+            RowPosition stopInTree = rowBounds.right.isMinimum() ? intervalTree.max() : rowBounds.right;
             return intervalTree.search(Interval.<RowPosition, SSTableReader>create(rowBounds.left, stopInTree));
         }
     }

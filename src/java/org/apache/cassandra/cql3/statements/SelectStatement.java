@@ -424,7 +424,7 @@ public class SelectStatement implements CQLStatement, MeasurableForPreparedCache
             RowPosition startKey = RowPosition.ForKey.get(startKeyBytes, p);
             RowPosition finishKey = RowPosition.ForKey.get(finishKeyBytes, p);
 
-            if (startKey.compareTo(finishKey) > 0 && !finishKey.isMinimum(p))
+            if (startKey.compareTo(finishKey) > 0 && !finishKey.isMinimum())
                 return null;
 
             if (includeKeyBound(Bound.START))
@@ -1101,13 +1101,24 @@ public class SelectStatement implements CQLStatement, MeasurableForPreparedCache
         return value;
     }
 
+    private CellName makeExclusiveSliceBound(Bound bound, CellNameType type, QueryOptions options) throws InvalidRequestException
+    {
+        if (sliceRestriction.isInclusive(bound))
+            return null;
+
+        if (sliceRestriction.isMultiColumn())
+            return type.makeCellName(((MultiColumnRestriction.Slice) sliceRestriction).componentBounds(bound, options).toArray());
+        else
+            return type.makeCellName(sliceRestriction.bound(bound, options));
+    }
+
     private Iterator<Cell> applySliceRestriction(final Iterator<Cell> cells, final QueryOptions options) throws InvalidRequestException
     {
         assert sliceRestriction != null;
 
         final CellNameType type = cfm.comparator;
-        final CellName excludedStart = sliceRestriction.isInclusive(Bound.START) ? null : type.makeCellName(sliceRestriction.bound(Bound.START, options));
-        final CellName excludedEnd = sliceRestriction.isInclusive(Bound.END) ? null : type.makeCellName(sliceRestriction.bound(Bound.END, options));
+        final CellName excludedStart = makeExclusiveSliceBound(Bound.START, type, options);
+        final CellName excludedEnd = makeExclusiveSliceBound(Bound.END, type, options);
 
         return new AbstractIterator<Cell>()
         {
@@ -1422,7 +1433,7 @@ public class SelectStatement implements CQLStatement, MeasurableForPreparedCache
                         hasQueriableIndex |= queriable[0];
                         hasQueriableClusteringColumnIndex |= queriable[1];
                         names.add(def);
-                        hasMultiColumnRelations |= ColumnDefinition.Kind.CLUSTERING_COLUMN.equals(def.kind);
+                        hasMultiColumnRelations |= ColumnDefinition.Kind.CLUSTERING_COLUMN == def.kind;
                     }
                     updateRestrictionsForRelation(stmt, names, rel, boundNames);
                 }
@@ -1434,7 +1445,7 @@ public class SelectStatement implements CQLStatement, MeasurableForPreparedCache
                     boolean[] queriable = processRelationEntity(stmt, indexManager, relation, entity, def);
                     hasQueriableIndex |= queriable[0];
                     hasQueriableClusteringColumnIndex |= queriable[1];
-                    hasSingleColumnRelations |= ColumnDefinition.Kind.CLUSTERING_COLUMN.equals(def.kind);
+                    hasSingleColumnRelations |= ColumnDefinition.Kind.CLUSTERING_COLUMN == def.kind;
                     updateRestrictionsForRelation(stmt, def, rel, boundNames);
                 }
             }
@@ -1936,12 +1947,12 @@ public class SelectStatement implements CQLStatement, MeasurableForPreparedCache
                     if (stmt.selectACollection())
                         throw new InvalidRequestException(String.format("Cannot restrict column \"%s\" by IN relation as a collection is selected by the query", cdef.name));
                 }
-                /*
-                else if (restriction.isContains() && !hasQueriableIndex)
+                else if (restriction.isContains())
                 {
-                    throw new InvalidRequestException(String.format("Cannot restrict column \"%s\" by a CONTAINS relation without a secondary index", cdef.name));
+                    if (!hasQueriableIndex)
+                        throw new InvalidRequestException(String.format("Cannot restrict column \"%s\" by a CONTAINS relation without a secondary index", cdef.name));
+                    stmt.usesSecondaryIndexing = true;
                 }
-                */
 
                 previous = cdef;
             }

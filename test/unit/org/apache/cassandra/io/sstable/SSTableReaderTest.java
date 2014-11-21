@@ -62,7 +62,7 @@ import org.apache.cassandra.db.compaction.CompactionManager;
 import org.apache.cassandra.db.compaction.ICompactionScanner;
 import org.apache.cassandra.db.composites.Composites;
 import org.apache.cassandra.dht.LocalPartitioner;
-import org.apache.cassandra.dht.LocalToken;
+import org.apache.cassandra.dht.LocalPartitioner.LocalToken;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.io.util.FileDataInput;
@@ -215,13 +215,13 @@ public class SSTableReaderTest
     public void testReadRateTracking()
     {
         // try to make sure CASSANDRA-8239 never happens again
-        Keyspace keyspace = Keyspace.open("Keyspace1");
+        Keyspace keyspace = Keyspace.open(KEYSPACE1);
         ColumnFamilyStore store = keyspace.getColumnFamilyStore("Standard1");
 
         for (int j = 0; j < 10; j++)
         {
             ByteBuffer key = ByteBufferUtil.bytes(String.valueOf(j));
-            Mutation rm = new Mutation("Keyspace1", key);
+            Mutation rm = new Mutation(KEYSPACE1, key);
             rm.add("Standard1", cellname("0"), ByteBufferUtil.EMPTY_BYTE_BUFFER, j);
             rm.apply();
         }
@@ -370,7 +370,7 @@ public class SSTableReaderTest
         boolean foundScanner = false;
         for (SSTableReader s : store.getSSTables())
         {
-            ICompactionScanner scanner = s.getScanner(new Range<Token>(t(0), t(1), s.partitioner), null);
+            ICompactionScanner scanner = s.getScanner(new Range<Token>(t(0), t(1)), null);
             scanner.next(); // throws exception pre 5407
             foundScanner = true;
         }
